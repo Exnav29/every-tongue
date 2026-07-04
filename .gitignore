@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets — API keys live in a .env file, never in git
+.env
+
+# Editor / OS clutter
+.vscode/
+Thumbs.db
