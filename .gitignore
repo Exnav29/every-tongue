@@ -10,3 +10,6 @@ venv/
 # Editor / OS clutter
 .vscode/
 Thumbs.db
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
