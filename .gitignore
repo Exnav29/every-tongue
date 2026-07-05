@@ -13,3 +13,6 @@ Thumbs.db
 
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
+
+# Project brief with pitch strategy — local only, not for the public repo
+BRIEF.md
