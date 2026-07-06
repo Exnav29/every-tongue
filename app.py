@@ -12,6 +12,8 @@ Built for the AMD Developer Hackathon: ACT II, July 2026.
 
 import os
 import re
+import tempfile
+from datetime import datetime, timezone
 
 import gradio as gr
 import requests
@@ -20,9 +22,18 @@ SCRIPTUREFLOW_BASE = "https://scriptureflow-api-preview.pages.dev"
 ENGLISH_VERSION = "en-kjv"  # public domain, no inline footnotes
 TIMEOUT = 20
 
+FIREWORKS_BASE = "https://api.fireworks.ai/inference"
+
+
 # AI backends — configured via environment variables, never committed.
-MI300X_BASE_URL = os.environ.get("MI300X_BASE_URL", "").rstrip("/")
-FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY", "")
+# Read at call time so a key pasted mid-session only needs an app restart,
+# not a code change.
+def fireworks_key() -> str:
+    return os.environ.get("FIREWORKS_API_KEY", "")
+
+
+def mi300x_url() -> str:
+    return os.environ.get("MI300X_BASE_URL", "").rstrip("/")
 
 LANGUAGES = {
     "Akuapem Twi": "tw-wakna",
@@ -32,6 +43,9 @@ LANGUAGES = {
 }
 
 MATERIAL_TYPES = ["Devotional", "Discussion questions", "Summary"]
+
+AUDIENCES = ["General Congregation", "Children", "Teens", "Young Adults",
+             "Adults", "Seniors"]
 
 # ---------------------------------------------------------------------------
 # Book-name mapping.
@@ -251,15 +265,25 @@ def fetch_passage(version: str, book_slug: str, chapter: int, verse: int,
 DRAFT_PROMPT = """You are helping a ministry worker create Scripture study materials.
 
 Below is a Bible passage in two parallel translations: English, and {language}
-(an expert human translation). Write a {material} in {language} ONLY, based on
-this passage.
+(an expert human translation). Write a {material} based on this passage in TWO
+versions: first in {language}, then the same material in English. Both versions
+must carry the same meaning.
 
+Audience: {audience}. Shape vocabulary, examples, and tone for this audience.
+{ministry_context}
 Rules:
 - Match the vocabulary, spelling, and register of the {language} translation.
 - Quote the {language} translation exactly when quoting the passage.
 - Do NOT translate or alter the Scripture text itself.
-- After the draft, list any phrases you are less confident about under the
-  heading "NEEDS NATIVE-SPEAKER REVIEW", one per line.
+- In the {language} version, after the draft, list any phrases you are less
+  confident about under the heading "NEEDS NATIVE-SPEAKER REVIEW", one per line.
+- Format your answer EXACTLY like this, keeping the marker lines:
+
+=== {language} VERSION ===
+(the {material} in {language})
+
+=== ENGLISH VERSION ===
+(the same {material} in English)
 
 Passage reference: {reference}
 
@@ -269,7 +293,41 @@ English ({english_name}):
 {language} ({target_name}):
 {target_text}
 
-Write the {material} now."""
+Write both versions now."""
+
+
+def ministry_context(name: str, church: str, location: str,
+                     audience_desc: str) -> str:
+    parts = []
+    if church.strip():
+        parts.append(f"ministry: {church.strip()}")
+    if name.strip():
+        parts.append(f"prepared by: {name.strip()}")
+    if location.strip():
+        parts.append(f"location: {location.strip()}")
+    if audience_desc.strip():
+        parts.append(f"about the audience: {audience_desc.strip()}")
+    if not parts:
+        return ""
+    return ("Context about this ministry (tailor tone and examples): "
+            + "; ".join(parts) + ".\n")
+
+
+def split_dual_draft(text: str, language: str) -> tuple[str, str]:
+    """Split '=== X VERSION ===' sections into (target, english).
+
+    If the model ignored the format, keep everything in the target box
+    rather than losing output."""
+    parts = re.split(r"===\s*([^=]+?)\s*VERSION\s*===", text)
+    tgt, eng = "", ""
+    for name, body in zip(parts[1::2], parts[2::2]):
+        if name.strip().lower().startswith("english"):
+            eng = body.strip()
+        else:
+            tgt = body.strip()
+    if not tgt and not eng:
+        return text.strip(), ""
+    return tgt, eng
 
 BACK_TRANSLATE_PROMPT = """Translate the following {language} text into plain English,
 as literally as possible so the reader can verify the meaning. Do not improve
@@ -278,28 +336,78 @@ or embellish it — translate what it actually says.
 {draft}"""
 
 
+_resolved_models: dict[str, str] = {}
+
+
+def list_models(base: str, key: str) -> list[str]:
+    """Ask an OpenAI-compatible endpoint (Fireworks or vLLM) what it serves."""
+    r = requests.get(f"{base}/v1/models",
+                     headers={"Authorization": f"Bearer {key}"}, timeout=30)
+    r.raise_for_status()
+    return [m["id"] for m in r.json().get("data", [])]
+
+
+def pick_gemma_model(model_ids: list[str]) -> str | None:
+    """Ladder: newest Gemma generation first, largest size first,
+    instruct-tuned preferred (Gemma 4 27B > Gemma 4 12B > Gemma 3 27B …)."""
+    def score(mid: str):
+        low = mid.lower()
+        gen = re.search(r"gemma-?(\d+)", low)
+        size = re.search(r"(\d+(?:\.\d+)?)b", low)
+        instruct = bool(re.search(r"(^|[^a-z])(it|instruct)([^a-z]|$)", low))
+        return (instruct,
+                int(gen.group(1)) if gen else 0,
+                float(size.group(1)) if size else 0.0)
+    gemmas = [m for m in model_ids if "gemma" in m.lower()]
+    return max(gemmas, key=score) if gemmas else None
+
+
+def resolve_model(base: str, key: str) -> str | None:
+    """Model to use at this endpoint: env override, else discovered Gemma,
+    else (for the self-hosted vLLM box) whatever single model it serves."""
+    override = os.environ.get("GEMMA_MODEL")
+    if override:
+        return override
+    if base in _resolved_models:
+        return _resolved_models[base]
+    try:
+        models = list_models(base, key)
+    except requests.RequestException:
+        return None
+    model = pick_gemma_model(models)
+    if not model and base != FIREWORKS_BASE and models:
+        model = models[0]
+    if model:
+        _resolved_models[base] = model
+    return model
+
+
 def ai_complete(prompt: str) -> tuple[str, str] | None:
     """Try real backends in order. Returns (text, backend_label) or None."""
-    for base, label, key in (
-        (MI300X_BASE_URL, "Gemma on AMD MI300X (vLLM)", "EMPTY"),
-        ("https://api.fireworks.ai/inference", "Gemma via Fireworks AI",
-         FIREWORKS_API_KEY),
-    ):
-        if not base or not key:
+    backends = []
+    if mi300x_url():
+        backends.append((mi300x_url(), "EMPTY", "Gemma on AMD MI300X (vLLM)"))
+    if fireworks_key():
+        backends.append((FIREWORKS_BASE, fireworks_key(),
+                         "Gemma via Fireworks AI"))
+    for base, key, label in backends:
+        model = resolve_model(base, key)
+        if not model:
             continue
         try:
             r = requests.post(
                 f"{base}/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
                 json={
-                    "model": os.environ.get("GEMMA_MODEL", ""),
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 2048,
                 },
                 timeout=120,
             )
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"], label
+            text = r.json()["choices"][0]["message"]["content"]
+            return text, f"{label} · {model.rsplit('/', 1)[-1]}"
         except (requests.RequestException, KeyError, IndexError):
             continue  # fall down the ladder
     return None
@@ -311,12 +419,13 @@ MOCK_BANNER = (
 )
 
 
-def mock_draft(material: str, language: str, reference: str, target_text: str) -> str:
+def mock_draft(material: str, language: str, reference: str,
+               target_text: str, audience: str) -> str:
     body = {
         "Devotional": (
-            f"[{language} devotional on {reference} would appear here — "
-            "an opening reflection quoting the passage, a real-life "
-            "application for the community, and a closing prayer.]"
+            f"[{language} devotional on {reference} for {audience} would "
+            "appear here — an opening reflection quoting the passage, a "
+            "real-life application for the community, and a closing prayer.]"
         ),
         "Discussion questions": (
             f"1. [{language} question about what the passage says]\n"
@@ -331,13 +440,20 @@ def mock_draft(material: str, language: str, reference: str, target_text: str) -
             "main point for readers and oral learners.]"
         ),
     }[material]
+    # Same '=== X VERSION ===' format the real prompt requires, so the
+    # splitter is exercised in mock mode too.
     return (
-        MOCK_BANNER
-        + f"# {material} — {reference} ({language})\n\n"
+        f"=== {language} VERSION ===\n"
+        + MOCK_BANNER
+        + f"# {material} — {reference} ({language} · {audience})\n\n"
         + f"> {target_text}\n\n"
         + body
         + "\n\nNEEDS NATIVE-SPEAKER REVIEW:\n"
-        + "- [phrases Gemma is less confident about will be listed here]"
+        + "- [phrases Gemma is less confident about will be listed here]\n\n"
+        + "=== ENGLISH VERSION ===\n"
+        + MOCK_BANNER
+        + f"# {material} — {reference} (English · {audience})\n\n"
+        + f"[The same {material.lower()} in English would appear here.]"
     )
 
 
@@ -395,22 +511,63 @@ def on_fetch(language: str, reference: str):
     )
 
 
-def on_draft(language: str, material: str, reference: str,
-             eng_text: str, tgt_text: str):
+def on_draft(language: str, material: str, audience: str, reference: str,
+             eng_text: str, tgt_text: str, min_name: str, min_church: str,
+             min_location: str, min_audience: str):
     if not tgt_text.strip():
-        return "", "⚠️ No passage text yet — fetch or paste one first."
+        return "", "", "⚠️ No passage text yet — fetch or paste one first."
     reference = reference.strip() or "the passage"
     prompt = DRAFT_PROMPT.format(
-        language=language, material=material.lower(), reference=reference,
+        language=language, material=material.lower(), audience=audience,
+        ministry_context=ministry_context(min_name, min_church,
+                                          min_location, min_audience),
+        reference=reference,
         english_name=ENGLISH_VERSION, english_text=eng_text.strip() or "(not provided)",
         target_name=LANGUAGES[language], target_text=tgt_text.strip(),
     )
     real = ai_complete(prompt)
     if real:
         text, backend = real
-        return text, f"✅ Draft generated by {backend}."
-    return (mock_draft(material, language, reference, tgt_text.strip()),
-            "⚠️ Draft is a MOCK — no AI backend configured yet.")
+        tgt, eng = split_dual_draft(text, language)
+        return tgt, eng, f"✅ Draft generated by {backend}."
+    tgt, eng = split_dual_draft(
+        mock_draft(material, language, reference, tgt_text.strip(), audience),
+        language)
+    return tgt, eng, "⚠️ Draft is a MOCK — no AI backend configured yet."
+
+
+def make_download(language: str, material: str, audience: str, reference: str,
+                  eng_text: str, tgt_text: str, draft_tgt: str,
+                  draft_eng: str, back_text: str, min_name: str,
+                  min_church: str, min_location: str):
+    reference = reference.strip() or "passage"
+    lines = [f"# {material} — {reference} ({language})", ""]
+    if min_church.strip():
+        lines += [f"**Ministry:** {min_church.strip()}"]
+    if min_name.strip():
+        lines += [f"**Prepared by:** {min_name.strip()}"]
+    if min_location.strip():
+        lines += [f"**Location:** {min_location.strip()}"]
+    lines += [f"**Audience:** {audience}", "", "## Passage", ""]
+    if eng_text.strip():
+        lines += [f"**English:** {eng_text.strip()}", ""]
+    if tgt_text.strip():
+        lines += [f"**{language}:** {tgt_text.strip()}", ""]
+    if draft_tgt.strip():
+        lines += [f"## {material} — {language}", "", draft_tgt.strip(), ""]
+    if draft_eng.strip():
+        lines += [f"## {material} — English", "", draft_eng.strip(), ""]
+    if back_text.strip():
+        lines += ["## Back-translation (verification)", "", back_text.strip(), ""]
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines += ["---",
+              f"Generated by Every Tongue · Scripture text via ScriptureFlow · {stamp}",
+              "AI drafts require native-speaker review before use."]
+    safe_ref = re.sub(r"[^A-Za-z0-9]+", "-", reference).strip("-").lower()
+    path = os.path.join(tempfile.gettempdir(), f"every-tongue-{safe_ref}.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
 
 
 def on_back_translate(language: str, draft: str):
@@ -441,8 +598,22 @@ with gr.Blocks(title="Every Tongue") as demo:
                                label="Target language")
         material = gr.Dropdown(MATERIAL_TYPES, value="Devotional",
                                label="Material type")
+        audience = gr.Dropdown(AUDIENCES, value="General Congregation",
+                               label="Audience")
         reference = gr.Textbox(label="Passage reference",
                                placeholder="e.g. John 3:16 or James 1:2-4")
+
+    with gr.Accordion("About your ministry (optional — shapes the drafts)",
+                      open=False):
+        with gr.Row():
+            min_name = gr.Textbox(label="Your name")
+            min_church = gr.Textbox(label="Church / ministry name")
+            min_location = gr.Textbox(label="Location")
+        min_audience = gr.Textbox(
+            label="Describe your audience",
+            placeholder="e.g. youth group in Kumasi, mixed reading levels, "
+                        "many oral learners", lines=2)
+        gr.Markdown("*Session only — nothing is saved after you close the page.*")
 
     fetch_btn = gr.Button("\U0001f4d6 Fetch passage", variant="primary")
     status = gr.Markdown()
@@ -453,9 +624,13 @@ with gr.Blocks(title="Every Tongue") as demo:
         tgt_box = gr.Textbox(label="Target-language passage (editable)", lines=4)
 
     draft_btn = gr.Button("✍️ Draft study material", variant="primary")
-    draft_box = gr.Textbox(label="Draft (in the target language)", lines=14)
+    with gr.Row():
+        draft_tgt_box = gr.Textbox(label="Draft — target language", lines=14)
+        draft_eng_box = gr.Textbox(label="Draft — English", lines=14)
 
-    back_btn = gr.Button("\U0001f504 Back-translate draft to English")
+    with gr.Row():
+        back_btn = gr.Button("\U0001f504 Back-translate draft to English")
+        download_btn = gr.DownloadButton("⬇️ Download as Markdown")
     back_box = gr.Textbox(label="Back-translation (verify the meaning survived)",
                           lines=8)
 
@@ -467,9 +642,17 @@ with gr.Blocks(title="Every Tongue") as demo:
     )
 
     fetch_btn.click(on_fetch, [language, reference], [eng_box, tgt_box, status])
-    draft_btn.click(on_draft, [language, material, reference, eng_box, tgt_box],
-                    [draft_box, status])
-    back_btn.click(on_back_translate, [language, draft_box], [back_box, status])
+    draft_btn.click(on_draft,
+                    [language, material, audience, reference, eng_box, tgt_box,
+                     min_name, min_church, min_location, min_audience],
+                    [draft_tgt_box, draft_eng_box, status])
+    back_btn.click(on_back_translate, [language, draft_tgt_box],
+                   [back_box, status])
+    download_btn.click(make_download,
+                       [language, material, audience, reference, eng_box,
+                        tgt_box, draft_tgt_box, draft_eng_box, back_box,
+                        min_name, min_church, min_location],
+                       download_btn)
 
 if __name__ == "__main__":
     demo.launch(theme=gr.themes.Soft())
