@@ -19,8 +19,18 @@ import gradio as gr
 import requests
 
 SCRIPTUREFLOW_BASE = "https://scriptureflow-api-preview.pages.dev"
-ENGLISH_VERSION = "en-kjv"  # public domain, no inline footnotes
 TIMEOUT = 20
+
+# English source versions — all verified to return clean text (Tue Jul 7).
+# BSB and FBV were rejected: they embed unbounded prose footnotes mid-verse
+# that can't be stripped without risking Scripture text.
+ENGLISH_VERSIONS = {
+    "Translation for Translators (plain modern English)": "en-t4t",
+    "Literal Standard Version": "en-lsv",
+    "American Standard Version (1901)": "en-asv",
+    "King James Version": "en-kjv",
+}
+DEFAULT_ENGLISH = "Translation for Translators (plain modern English)"
 
 FIREWORKS_BASE = "https://api.fireworks.ai/inference"
 
@@ -29,18 +39,33 @@ FIREWORKS_BASE = "https://api.fireworks.ai/inference"
 # Read at call time so a key pasted mid-session only needs an app restart,
 # not a code change.
 def fireworks_key() -> str:
-    return os.environ.get("FIREWORKS_API_KEY", "")
+    key = os.environ.get("FIREWORKS_API_KEY", "")
+    if not key and os.name == "nt":
+        # Windows: a user-level env var set after this process's parent
+        # started isn't inherited — read it from the user environment
+        # directly so a freshly pasted key works without a machine reboot.
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+                key = str(winreg.QueryValueEx(k, "FIREWORKS_API_KEY")[0])
+        except OSError:
+            key = ""
+    return key
 
 
 def mi300x_url() -> str:
     return os.environ.get("MI300X_BASE_URL", "").rstrip("/")
 
-LANGUAGES = {
-    "Akuapem Twi": "tw-wakna",
-    "Asante Twi": "tw-wasna",
-    "Ewe": "ee-oal",
-    "Swahili": "swh-onen",
+# Target translations, flat list (only Twi has two versions; a single
+# dropdown with explicit translation names beats cascading menus).
+# label -> (ScriptureFlow version key, language name for prompts)
+TARGET_TRANSLATIONS = {
+    "Akuapem Twi — Biblica Open 2020": ("tw-wakna", "Akuapem Twi"),
+    "Asante Twi — Biblica Open 2020": ("tw-wasna", "Asante Twi"),
+    "Ewe — eweOAL 2020": ("ee-oal", "Ewe"),
+    "Swahili — Kiswahili Neno 2015": ("swh-onen", "Swahili"),
 }
+DEFAULT_TARGET = "Akuapem Twi — Biblica Open 2020"
 
 MATERIAL_TYPES = ["Devotional", "Discussion questions", "Summary"]
 
@@ -203,6 +228,16 @@ def parse_reference(ref: str):
 
 
 def clean_verse_text(text: str) -> str:
+    # T4T uses square-bracket translator markers like [MTY], [MET], [RHQ].
+    text = re.sub(r"\s*\[[A-Z]{2,6}\]", "", text)
+    # KJV embeds translator footnotes inline, e.g.
+    # "...saith the LORD.29.9 falsely: Heb. in a lie For thus saith..."
+    # Pattern: chapter.verse, the flagged word, a colon, a source marker
+    # (Heb./Gr./Chald./or/that is), then the note — which runs lowercase
+    # until the next sentence's capital letter.
+    text = re.sub(
+        r"\s*\d+\.\d+\s+[^:]{1,50}:\s*(?:Heb|Gr|Chald|or|that is)\b\.?,?[^A-Z]*",
+        " ", text)
     return re.sub(r"\s+", " ", text.replace("¶", "")).strip()
 
 
@@ -262,28 +297,61 @@ def fetch_passage(version: str, book_slug: str, chapter: int, verse: int,
 # is configured (MI300X endpoint or Fireworks key via environment variables).
 # ---------------------------------------------------------------------------
 
-DRAFT_PROMPT = """You are helping a ministry worker create Scripture study materials.
+DRAFT_PROMPT = """You are an experienced Bible teacher helping a ministry worker
+create a complete Scripture STUDY GUIDE.
 
 Below is a Bible passage in two parallel translations: English, and {language}
-(an expert human translation). Write a {material} based on this passage in TWO
-versions: first in {language}, then the same material in English. Both versions
-must carry the same meaning.
+(an expert human translation). Produce the study guide in TWO versions: first
+in {language}, then the same guide in English. Both versions must carry the
+same meaning, depth, and structure.
 
-Audience: {audience}. Shape vocabulary, examples, and tone for this audience.
+Audience: {audience}. Shape vocabulary, examples, depth, and tone for this
+audience. Lean the guide toward a "{material}" emphasis where it reads
+naturally, but always include every section below.
 {ministry_context}
+Write each version with EXACTLY these parts, in this order. Use a Markdown
+"# " line for the title and a Markdown "## " heading for every section. In the
+{language} version, translate the section headings into {language}; in the
+English version, keep them in English.
+
+# (Title — a short line capturing the passage's main message)
+## Passage
+   Quote the relevant verse(s) — in {language} for the {language} version, in
+   English for the English version. Quote one or two verses at a time.
+## Background
+   The historical, cultural, and authorial background of the passage.
+## Immediate Context
+   What comes just before and after, and how it frames this passage.
+## Explanation
+   A clear verse-by-verse or phrase-by-phrase explanation of the meaning.
+## Key Spiritual Themes
+   The main spiritual truths, as a short bulleted list.
+## Modern-Day Application
+   Concrete ways today's readers can live this out.
+## Reflection Questions
+   A NUMBERED list of 4-6 questions for personal or group study.
+## Closing Prayer
+   A short prayer flowing from the passage.
+
 Rules:
 - Match the vocabulary, spelling, and register of the {language} translation.
-- Quote the {language} translation exactly when quoting the passage.
+- In the {language} version quote ONLY the {language} translation; in the
+  English version quote ONLY the English translation. Never quote the passage
+  in the other language's version.
+- Write the English version entirely in English and the {language} version
+  entirely in {language} (proper names excepted). Do not drop untranslated
+  English words like "goal setting" into the {language} version.
 - Do NOT translate or alter the Scripture text itself.
-- In the {language} version, after the draft, list any phrases you are less
-  confident about under the heading "NEEDS NATIVE-SPEAKER REVIEW", one per line.
-- Format your answer EXACTLY like this, keeping the marker lines:
+- After the Closing Prayer of the {language} version ONLY, add one final
+  "## NEEDS NATIVE-SPEAKER REVIEW" section listing any {language} words or
+  phrases you are less confident about, one per line.
+- Format your whole answer EXACTLY like this, keeping the marker lines:
 
 === {language} VERSION ===
-(the {material} in {language})
+(the full study guide in {language})
 
 === ENGLISH VERSION ===
-(the same {material} in English)
+(the full study guide in English)
 
 Passage reference: {reference}
 
@@ -298,6 +366,9 @@ Write both versions now."""
 
 def ministry_context(name: str, church: str, location: str,
                      audience_desc: str) -> str:
+    # Gradio passes None (not "") for fields inside a never-opened accordion.
+    name, church, location, audience_desc = (
+        (v or "") for v in (name, church, location, audience_desc))
     parts = []
     if church.strip():
         parts.append(f"ministry: {church.strip()}")
@@ -347,43 +418,116 @@ def list_models(base: str, key: str) -> list[str]:
     return [m["id"] for m in r.json().get("data", [])]
 
 
-def pick_gemma_model(model_ids: list[str]) -> str | None:
-    """Ladder: newest Gemma generation first, largest size first,
-    instruct-tuned preferred (Gemma 4 27B > Gemma 4 12B > Gemma 3 27B …)."""
+def fireworks_gemma_catalog(key: str) -> list[str]:
+    """Fireworks' /v1/models lists only ~7 featured models; the Gemma family
+    lives in the full public catalog, which is paginated on the control-plane
+    API (confirmed Tue Jul 7)."""
+    url = "https://api.fireworks.ai/v1/accounts/fireworks/models"
+    names: list[str] = []
+    token = None
+    for _ in range(20):
+        params: dict = {"pageSize": 200}
+        if token:
+            params["pageToken"] = token
+        r = requests.get(url, headers={"Authorization": f"Bearer {key}"},
+                         params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for m in data.get("models", []):
+            name = m.get("name", "")
+            if "gemma" in name.lower() and m.get("state") == "READY":
+                names.append("accounts/fireworks/models/" + name.split("/")[-1])
+        token = data.get("nextPageToken")
+        if not token:
+            break
+    return names
+
+
+QUANT_MARKERS = ("nvfp4", "fp8", "awq", "gptq", "int4", "int8")
+
+# TEMPORARY STAND-IN (added Tue Jul 7). As of today NO Gemma model is
+# serverless-deployed on Fireworks (all 15 catalog Gemmas have zero
+# deployments; calls return 404 "not deployed"). Until the organizers'
+# promised Gemma route goes live, fall back to the strongest currently
+# deployed model so prompt/format tuning can happen on real inference.
+# Gemma stays at the TOP of the ladder: the moment Fireworks deploys one,
+# it wins the probe and this stand-in is ignored automatically.
+FIREWORKS_STANDIN = "accounts/fireworks/models/gpt-oss-120b"
+
+
+def rank_gemma_models(model_ids: list[str]) -> list[str]:
+    """Ladder: instruct-tuned first, newest Gemma generation first,
+    full-precision before quantized variants, then largest size
+    (Gemma 4 31B > Gemma 4 26B > Gemma 3 27B > … ), best first."""
     def score(mid: str):
         low = mid.lower()
-        gen = re.search(r"gemma-?(\d+)", low)
+        # Generation digit must NOT be a size ("gemma-7b" is size 7B,
+        # generation 1 — not generation 7).
+        gen = re.search(r"gemma-?(\d+)(?=$|-)", low)
         size = re.search(r"(\d+(?:\.\d+)?)b", low)
         instruct = bool(re.search(r"(^|[^a-z])(it|instruct)([^a-z]|$)", low))
+        quantized = any(q in low for q in QUANT_MARKERS)
         return (instruct,
                 int(gen.group(1)) if gen else 0,
+                not quantized,
                 float(size.group(1)) if size else 0.0)
     gemmas = [m for m in model_ids if "gemma" in m.lower()]
-    return max(gemmas, key=score) if gemmas else None
+    return sorted(gemmas, key=score, reverse=True)
+
+
+def pick_gemma_model(model_ids: list[str]) -> str | None:
+    ranked = rank_gemma_models(model_ids)
+    return ranked[0] if ranked else None
+
+
+def probe_model(base: str, key: str, model: str) -> bool:
+    """One-token test call — catalog listings include models that aren't
+    actually callable (404), so verify before trusting a pick."""
+    try:
+        r = requests.post(
+            f"{base}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model,
+                  "messages": [{"role": "user", "content": "hi"}],
+                  "max_tokens": 1},
+            timeout=30,
+        )
+        return r.ok
+    except requests.RequestException:
+        return False
 
 
 def resolve_model(base: str, key: str) -> str | None:
-    """Model to use at this endpoint: env override, else discovered Gemma,
-    else (for the self-hosted vLLM box) whatever single model it serves."""
+    """Model to use at this endpoint: env override, else the best Gemma
+    that actually answers a probe, else (for the self-hosted vLLM box)
+    whatever single model it serves."""
     override = os.environ.get("GEMMA_MODEL")
     if override:
         return override
     if base in _resolved_models:
         return _resolved_models[base]
     try:
-        models = list_models(base, key)
+        if base == FIREWORKS_BASE:
+            models = fireworks_gemma_catalog(key)
+        else:
+            models = list_models(base, key)
     except requests.RequestException:
         return None
-    model = pick_gemma_model(models)
-    if not model and base != FIREWORKS_BASE and models:
-        model = models[0]
-    if model:
-        _resolved_models[base] = model
-    return model
+    candidates = rank_gemma_models(models)[:6]
+    if base == FIREWORKS_BASE:
+        candidates.append(FIREWORKS_STANDIN)  # temporary — see note above
+    elif not candidates and models:
+        candidates = models[:1]
+    for model in candidates:  # walk the ladder until one answers
+        if probe_model(base, key, model):
+            _resolved_models[base] = model
+            return model
+    return None
 
 
-def ai_complete(prompt: str) -> tuple[str, str] | None:
-    """Try real backends in order. Returns (text, backend_label) or None."""
+def ai_complete(prompt: str) -> tuple[str, str, bool] | None:
+    """Try real backends in order.
+    Returns (text, backend_label, truncated) or None."""
     backends = []
     if mi300x_url():
         backends.append((mi300x_url(), "EMPTY", "Gemma on AMD MI300X (vLLM)"))
@@ -401,13 +545,20 @@ def ai_complete(prompt: str) -> tuple[str, str] | None:
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 2048,
+                    # Dual-language drafts of long passages need room; 2048
+                    # truncated the English half (seen Tue Jul 7).
+                    "max_tokens": 8192,
                 },
-                timeout=120,
+                timeout=180,
             )
             r.raise_for_status()
-            text = r.json()["choices"][0]["message"]["content"]
-            return text, f"{label} · {model.rsplit('/', 1)[-1]}"
+            choice = r.json()["choices"][0]
+            text = choice["message"]["content"]
+            truncated = choice.get("finish_reason") == "length"
+            short = model.rsplit("/", 1)[-1]
+            if "gemma" not in model.lower():
+                label = "TEMPORARY stand-in (not Gemma) via Fireworks AI"
+            return text, f"{label} · {short}", truncated
         except (requests.RequestException, KeyError, IndexError):
             continue  # fall down the ladder
     return None
@@ -419,41 +570,49 @@ MOCK_BANNER = (
 )
 
 
+def _mock_guide(reference: str, material: str, audience: str, label: str,
+                passage: str) -> str:
+    """One study-guide version in the same section structure the real prompt
+    requires — so the splitter and the PDF renderer are exercised by mocks."""
+    return (
+        f"# {material} on {reference} ({label} · {audience})\n\n"
+        + "## Passage\n"
+        + f"> {passage}\n\n"
+        + "## Background\n"
+        + f"[{label} background: the author, audience, and historical setting "
+        "of the passage would appear here.]\n\n"
+        + "## Immediate Context\n"
+        + f"[{label} note on what comes just before and after the passage.]\n\n"
+        + "## Explanation\n"
+        + f"[{label} phrase-by-phrase explanation of the passage's meaning.]\n\n"
+        + "## Key Spiritual Themes\n"
+        + "- [theme one]\n- [theme two]\n- [theme three]\n\n"
+        + "## Modern-Day Application\n"
+        + f"[{label} application for {audience.lower()} today.]\n\n"
+        + "## Reflection Questions\n"
+        + "1. [question about what the passage says]\n"
+        + "2. [question about what it means]\n"
+        + "3. [question about how to live it this week]\n"
+        + "4. [question for group discussion]\n\n"
+        + "## Closing Prayer\n"
+        + "[a short prayer flowing from the passage.]\n"
+    )
+
+
 def mock_draft(material: str, language: str, reference: str,
                target_text: str, audience: str) -> str:
-    body = {
-        "Devotional": (
-            f"[{language} devotional on {reference} for {audience} would "
-            "appear here — an opening reflection quoting the passage, a "
-            "real-life application for the community, and a closing prayer.]"
-        ),
-        "Discussion questions": (
-            f"1. [{language} question about what the passage says]\n"
-            f"2. [{language} question about what it means]\n"
-            f"3. [{language} question about how to live it this week]\n"
-            f"4. [{language} question for the group to discuss together]\n"
-            f"5. [{language} question connecting the passage to daily life]"
-        ),
-        "Summary": (
-            f"[{language} summary of {reference} would appear here — "
-            "3–4 sentences in simple language restating the passage's "
-            "main point for readers and oral learners.]"
-        ),
-    }[material]
-    # Same '=== X VERSION ===' format the real prompt requires, so the
-    # splitter is exercised in mock mode too.
+    # Same '=== X VERSION ===' + section format the real prompt requires, so
+    # the splitter and PDF renderer are exercised in mock mode too.
     return (
         f"=== {language} VERSION ===\n"
         + MOCK_BANNER
-        + f"# {material} — {reference} ({language} · {audience})\n\n"
-        + f"> {target_text}\n\n"
-        + body
-        + "\n\nNEEDS NATIVE-SPEAKER REVIEW:\n"
+        + _mock_guide(reference, material, audience, language, target_text)
+        + "\n## NEEDS NATIVE-SPEAKER REVIEW\n"
         + "- [phrases Gemma is less confident about will be listed here]\n\n"
         + "=== ENGLISH VERSION ===\n"
         + MOCK_BANNER
-        + f"# {material} — {reference} (English · {audience})\n\n"
-        + f"[The same {material.lower()} in English would appear here.]"
+        + _mock_guide(reference, material, audience, "English",
+                      "[the passage in English]")
     )
 
 
@@ -470,8 +629,9 @@ def mock_back_translation(language: str) -> str:
 # UI handlers
 # ---------------------------------------------------------------------------
 
-def on_fetch(language: str, reference: str):
-    version = LANGUAGES[language]
+def on_fetch(target_label: str, english_label: str, reference: str):
+    version, language = TARGET_TRANSLATIONS[target_label]
+    english_version = ENGLISH_VERSIONS[english_label]
     parsed = parse_reference(reference or "")
     if not parsed:
         return "", "", (
@@ -481,11 +641,11 @@ def on_fetch(language: str, reference: str):
         )
     book, chapter, verse, end_verse = parsed
     tgt_map = book_map(version)
-    eng_map = book_map(ENGLISH_VERSION)
+    eng_map = book_map(english_version)
     if book not in eng_map:
         return "", "", f"⚠️ Unknown book name in “{reference}”."
     try:
-        eng_text, eng_name = fetch_passage(ENGLISH_VERSION, eng_map[book],
+        eng_text, eng_name = fetch_passage(english_version, eng_map[book],
                                            chapter, verse, end_verse)
     except (requests.RequestException, ValueError) as e:
         return "", "", (
@@ -511,74 +671,368 @@ def on_fetch(language: str, reference: str):
     )
 
 
-def on_draft(language: str, material: str, audience: str, reference: str,
-             eng_text: str, tgt_text: str, min_name: str, min_church: str,
-             min_location: str, min_audience: str):
-    if not tgt_text.strip():
+def on_draft(target_label: str, english_label: str, material: str,
+             audience: str, reference: str, eng_text: str, tgt_text: str,
+             min_name: str, min_church: str, min_location: str,
+             min_audience: str):
+    version, language = TARGET_TRANSLATIONS[target_label]
+    if not (tgt_text or "").strip():
         return "", "", "⚠️ No passage text yet — fetch or paste one first."
-    reference = reference.strip() or "the passage"
+    eng_text = eng_text or ""
+    reference = (reference or "").strip() or "the passage"
     prompt = DRAFT_PROMPT.format(
         language=language, material=material.lower(), audience=audience,
         ministry_context=ministry_context(min_name, min_church,
                                           min_location, min_audience),
         reference=reference,
-        english_name=ENGLISH_VERSION, english_text=eng_text.strip() or "(not provided)",
-        target_name=LANGUAGES[language], target_text=tgt_text.strip(),
+        english_name=english_label, english_text=eng_text.strip() or "(not provided)",
+        target_name=target_label, target_text=tgt_text.strip(),
     )
     real = ai_complete(prompt)
     if real:
-        text, backend = real
+        text, backend, truncated = real
         tgt, eng = split_dual_draft(text, language)
-        return tgt, eng, f"✅ Draft generated by {backend}."
+        status = f"✅ Draft generated by {backend}."
+        if truncated:
+            status += (" ⚠️ Output hit the length limit and was cut off — "
+                       "try a shorter passage or regenerate.")
+        elif not eng:
+            status += (" ⚠️ The model skipped the English version — "
+                       "regenerate to get both.")
+        return tgt, eng, status
     tgt, eng = split_dual_draft(
         mock_draft(material, language, reference, tgt_text.strip(), audience),
         language)
     return tgt, eng, "⚠️ Draft is a MOCK — no AI backend configured yet."
 
 
-def make_download(language: str, material: str, audience: str, reference: str,
-                  eng_text: str, tgt_text: str, draft_tgt: str,
-                  draft_eng: str, back_text: str, min_name: str,
-                  min_church: str, min_location: str):
-    reference = reference.strip() or "passage"
+# ---------------------------------------------------------------------------
+# Exports — Markdown (simple, complete) and PDF (polished ministry handout).
+#
+# The PDF layout mirrors the ScriptureFlow study-guide template (colors and
+# structure extracted from the reference PDF, Tue Jul 7): text header with
+# wordmark + eyebrow, document title, 2x2 metadata grid, teal section
+# headings, cream passage box, footer rule with "Powered by ScriptureFlow".
+# ---------------------------------------------------------------------------
+
+FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+# Palette lifted from the ScriptureFlow template's own content streams.
+BRAND_TEAL = "#022f2e"    # wordmark + section headings
+BRAND_ACCENT = "#0f766e"  # eyebrow / accents
+BRAND_TITLE = "#0f172a"   # document title
+BRAND_BODY = "#1f2933"    # body text
+BRAND_MUTED = "#374151"   # metadata + footer
+BRAND_RULE = "#d1d5db"    # hairline rules
+BRAND_SOFT = "#f8f7f2"    # passage box background
+_fonts_ready = False
+
+
+def _ensure_fonts():
+    """Register the bundled DejaVu fonts once (they cover Twi/Ewe glyphs)."""
+    global _fonts_ready
+    if _fonts_ready:
+        return
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont as RLTTFont
+    pdfmetrics.registerFont(RLTTFont("ET", os.path.join(FONTS_DIR, "DejaVuSans.ttf")))
+    pdfmetrics.registerFont(RLTTFont("ET-Bold", os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf")))
+    pdfmetrics.registerFontFamily("ET", normal="ET", bold="ET-Bold",
+                                  italic="ET", boldItalic="ET-Bold")
+    _fonts_ready = True
+
+
+def _safe_name(reference: str, ext: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9]+", "-", reference).strip("-").lower() or "passage"
+    return os.path.join(tempfile.gettempdir(), f"every-tongue-{safe}.{ext}")
+
+
+def _clean_all(*vals):
+    return [(v or "").strip() for v in vals]
+
+
+def build_markdown(language, material, audience, reference, eng_text, tgt_text,
+                   draft_tgt, draft_eng, back_text, min_name, min_church,
+                   min_location):
+    (eng_text, tgt_text, draft_tgt, draft_eng, back_text, min_name,
+     min_church, min_location) = _clean_all(
+        eng_text, tgt_text, draft_tgt, draft_eng, back_text, min_name,
+        min_church, min_location)
+    reference = (reference or "").strip() or "passage"
     lines = [f"# {material} — {reference} ({language})", ""]
-    if min_church.strip():
-        lines += [f"**Ministry:** {min_church.strip()}"]
-    if min_name.strip():
-        lines += [f"**Prepared by:** {min_name.strip()}"]
-    if min_location.strip():
-        lines += [f"**Location:** {min_location.strip()}"]
+    if min_church:
+        lines.append(f"**Ministry:** {min_church}")
+    if min_name:
+        lines.append(f"**Prepared by:** {min_name}")
+    if min_location:
+        lines.append(f"**Location:** {min_location}")
     lines += [f"**Audience:** {audience}", "", "## Passage", ""]
-    if eng_text.strip():
-        lines += [f"**English:** {eng_text.strip()}", ""]
-    if tgt_text.strip():
-        lines += [f"**{language}:** {tgt_text.strip()}", ""]
-    if draft_tgt.strip():
-        lines += [f"## {material} — {language}", "", draft_tgt.strip(), ""]
-    if draft_eng.strip():
-        lines += [f"## {material} — English", "", draft_eng.strip(), ""]
-    if back_text.strip():
-        lines += ["## Back-translation (verification)", "", back_text.strip(), ""]
+    if eng_text:
+        lines += [f"**English:** {eng_text}", ""]
+    if tgt_text:
+        lines += [f"**{language}:** {tgt_text}", ""]
+    if draft_tgt:
+        lines += [f"## Study guide — {language}", "", draft_tgt, ""]
+    if draft_eng:
+        lines += ["## Study guide — English", "", draft_eng, ""]
+    if back_text:
+        lines += ["## Back-translation (verification)", "", back_text, ""]
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines += ["---",
               f"Generated by Every Tongue · Scripture text via ScriptureFlow · {stamp}",
               "AI drafts require native-speaker review before use."]
-    safe_ref = re.sub(r"[^A-Za-z0-9]+", "-", reference).strip("-").lower()
-    path = os.path.join(tempfile.gettempdir(), f"every-tongue-{safe_ref}.md")
+    path = _safe_name(reference, "md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     return path
 
 
-def on_back_translate(language: str, draft: str):
+def _inline(text: str) -> str:
+    """Escape XML and convert **bold** for reportlab Paragraph markup."""
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+
+
+def _guide_flowables(draft_text, styles):
+    """Convert one study guide's markdown into reportlab flowables."""
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, ListFlowable, ListItem
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+
+    flow = []
+    lines = draft_text.splitlines()
+    i = 0
+    review_mode = False
+    while i < len(lines):
+        line = lines[i].rstrip()
+        stripped = line.strip()
+        if not stripped:
+            i += 1
+            continue
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            flow.append(Paragraph(_inline(stripped[2:]), styles["title"]))
+            flow.append(Spacer(1, 4 * mm))
+        elif stripped.startswith("## "):
+            heading = stripped[3:].strip()
+            review_mode = "REVIEW" in heading.upper()
+            style = styles["review_h"] if review_mode else styles["heading"]
+            flow.append(Paragraph(_inline(heading), style))
+        elif stripped.startswith(">"):
+            # Passage quote — collect consecutive quote lines into a box.
+            quote = [stripped.lstrip("> ").strip()]
+            while i + 1 < len(lines) and lines[i + 1].strip().startswith(">"):
+                i += 1
+                quote.append(lines[i].strip().lstrip("> ").strip())
+            para = Paragraph(_inline(" ".join(quote)), styles["quote"])
+            box = Table([[para]], colWidths=[165 * mm])
+            box.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(BRAND_SOFT)),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(BRAND_ACCENT)),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            flow.append(box)
+            flow.append(Spacer(1, 3 * mm))
+        elif re.match(r"^\d+[.)]\s", stripped):
+            items = []
+            while i < len(lines) and re.match(r"^\d+[.)]\s", lines[i].strip()):
+                items.append(ListItem(Paragraph(
+                    _inline(re.sub(r"^\d+[.)]\s", "", lines[i].strip())),
+                    styles["body"])))
+                i += 1
+            flow.append(ListFlowable(items, bulletType="1", leftIndent=10 * mm))
+            flow.append(Spacer(1, 2 * mm))
+            continue
+        elif stripped.startswith(("- ", "* ")):
+            items = []
+            while i < len(lines) and lines[i].strip().startswith(("- ", "* ")):
+                body = lines[i].strip()[2:]
+                st = styles["review_item"] if review_mode else styles["body"]
+                items.append(ListItem(Paragraph(_inline(body), st)))
+                i += 1
+            flow.append(ListFlowable(items, bulletType="bullet", leftIndent=10 * mm))
+            flow.append(Spacer(1, 2 * mm))
+            continue
+        else:
+            flow.append(Paragraph(_inline(stripped), styles["body"]))
+        i += 1
+    return flow
+
+
+def _pdf_styles():
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_JUSTIFY
+    from reportlab.lib import colors
+    return {
+        "wordmark": ParagraphStyle("wm", fontName="ET-Bold", fontSize=19,
+                                   textColor=colors.HexColor(BRAND_TEAL), leading=22),
+        "eyebrow": ParagraphStyle("eb", fontName="ET-Bold", fontSize=8.5,
+                                  textColor=colors.HexColor(BRAND_ACCENT), leading=12,
+                                  spaceAfter=10),
+        "title": ParagraphStyle("t", fontName="ET-Bold", fontSize=19,
+                                textColor=colors.HexColor(BRAND_TITLE), leading=23, spaceAfter=4),
+        "meta": ParagraphStyle("m", fontName="ET", fontSize=9.5,
+                               textColor=colors.HexColor(BRAND_MUTED), leading=15),
+        "heading": ParagraphStyle("h", fontName="ET-Bold", fontSize=13,
+                                  textColor=colors.HexColor(BRAND_TEAL), spaceBefore=11,
+                                  spaceAfter=4, leading=16),
+        "review_h": ParagraphStyle("rh", fontName="ET-Bold", fontSize=13,
+                                   textColor=colors.HexColor(BRAND_ACCENT), spaceBefore=11,
+                                   spaceAfter=4, leading=16),
+        "body": ParagraphStyle("b", fontName="ET", fontSize=10.5, leading=15,
+                               textColor=colors.HexColor(BRAND_BODY),
+                               alignment=TA_JUSTIFY, spaceAfter=5),
+        "quote": ParagraphStyle("q", fontName="ET", fontSize=10.5,
+                               textColor=colors.HexColor(BRAND_TEAL), leading=15),
+        "review_item": ParagraphStyle("ri", fontName="ET", fontSize=10,
+                                      textColor=colors.HexColor(BRAND_MUTED), leading=13),
+    }
+
+
+class _NumberedCanvas:
+    """Two-pass canvas so the footer can show 'Page N of M' like the template."""
+
+    @staticmethod
+    def make(footer_left):
+        from reportlab.pdfgen import canvas as _canvas
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.lib import colors
+
+        class C(_canvas.Canvas):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self._saved = []
+
+            def showPage(self):
+                self._saved.append(dict(self.__dict__))
+                self._startPage()
+
+            def save(self):
+                total = len(self._saved)
+                for state in self._saved:
+                    self.__dict__.update(state)
+                    self._draw_footer(total)
+                    super().showPage()
+                super().save()
+
+            def _draw_footer(self, total):
+                w = A4[0]
+                self.setStrokeColor(colors.HexColor(BRAND_RULE))
+                self.setLineWidth(0.5)
+                self.line(18 * mm, 15 * mm, w - 18 * mm, 15 * mm)
+                self.setFillColor(colors.HexColor(BRAND_MUTED))
+                self.setFont("ET", 8)
+                self.drawString(18 * mm, 11 * mm, footer_left)
+                self.drawRightString(
+                    w - 18 * mm, 11 * mm,
+                    f"Powered by ScriptureFlow · Page {self.getPageNumber()} of {total}")
+        return C
+
+
+def build_pdf(target_label, material, audience, reference, tgt_text,
+              draft_tgt, min_name, min_church, min_location):
+    """Render the target-language study guide as a polished PDF handout,
+    matching the ScriptureFlow study-guide template."""
+    _ensure_fonts()
+    from reportlab.platypus import SimpleDocTemplate, Spacer, Paragraph, Table, TableStyle
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+
+    _, language = TARGET_TRANSLATIONS.get(target_label, (None, target_label))
+    translation_name = target_label.split("—")[-1].strip() if "—" in target_label else target_label
+    draft_tgt, min_name, min_church, min_location = _clean_all(
+        draft_tgt, min_name, min_church, min_location)
+    reference = (reference or "").strip() or "passage"
+    styles = _pdf_styles()
+    path = _safe_name(reference, "pdf")
+
+    # The first '# Title' line in the draft becomes the document title; strip
+    # it so it isn't rendered twice. Scan lines (not just position 0) so a
+    # leading mock banner or blank line doesn't hide it.
+    doc_title = f"{material} — {reference}"
+    lines = draft_tgt.splitlines()
+    for k, ln in enumerate(lines):
+        s = ln.lstrip()
+        if s.startswith("# ") and not s.startswith("## "):
+            doc_title = s[2:].strip()
+            del lines[k]
+            break
+    body_text = "\n".join(lines)
+
+    footer_left = min_church or "Every Tongue"
+
+    def header(canvas, doc):
+        pass  # header is flowable content (page 1 only), footer via canvas
+
+    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=18 * mm,
+                            bottomMargin=20 * mm, leftMargin=18 * mm,
+                            rightMargin=18 * mm, title=doc_title)
+
+    def meta_cell(label, value):
+        return Paragraph(f"<b>{_inline(label)}:</b> {_inline(value or '—')}", styles["meta"])
+
+    story = [
+        Paragraph("Every Tongue", styles["wordmark"]),
+        Paragraph("MULTILINGUAL BIBLE STUDY GUIDE", styles["eyebrow"]),
+        Paragraph(_inline(doc_title), styles["title"]),
+        Spacer(1, 2 * mm),
+    ]
+    grid = Table(
+        [[meta_cell("Passage", reference), meta_cell("Translation", translation_name)],
+         [meta_cell("Language", language), meta_cell("Prepared for", min_name)]],
+        colWidths=[87 * mm, 87 * mm])
+    grid.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.HexColor(BRAND_RULE)),
+        ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor(BRAND_RULE)),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (0, -1), 0),
+    ]))
+    story += [grid, Spacer(1, 5 * mm)]
+    story += _guide_flowables(body_text or "(no study guide generated yet)", styles)
+
+    doc.build(story, canvasmaker=_NumberedCanvas.make(footer_left))
+    return path
+
+
+def on_back_translate(target_label: str, draft: str):
+    _, language = TARGET_TRANSLATIONS[target_label]
     if not draft.strip():
         return "", "⚠️ Nothing to back-translate — generate a draft first."
     real = ai_complete(BACK_TRANSLATE_PROMPT.format(language=language, draft=draft))
     if real:
-        text, backend = real
-        return text, f"✅ Back-translation by {backend}."
+        text, backend, truncated = real
+        status = f"✅ Back-translation by {backend}."
+        if truncated:
+            status += " ⚠️ Output was cut off at the length limit."
+        return text, status
     return (mock_back_translation(language),
             "⚠️ Back-translation is a MOCK — no AI backend configured yet.")
+
+
+def on_export_pdf(target_label, english_label, material, audience, reference,
+                  eng_text, tgt_text, draft_tgt, draft_eng, back_text,
+                  min_name, min_church, min_location):
+    if not (draft_tgt or "").strip():
+        return gr.update(visible=False), "⚠️ Generate a draft before exporting."
+    try:
+        path = build_pdf(target_label, material, audience, reference, tgt_text,
+                         draft_tgt, min_name, min_church, min_location)
+    except Exception as e:  # never crash the UI on an export problem
+        return gr.update(visible=False), f"⚠️ PDF export failed: {e}"
+    return gr.update(value=path, visible=True), "✅ PDF ready — click to download."
+
+
+def on_export_md(target_label, english_label, material, audience, reference,
+                 eng_text, tgt_text, draft_tgt, draft_eng, back_text,
+                 min_name, min_church, min_location):
+    _, language = TARGET_TRANSLATIONS[target_label]
+    if not (draft_tgt or "").strip():
+        return gr.update(visible=False), "⚠️ Generate a draft before exporting."
+    path = build_markdown(language, material, audience, reference, eng_text,
+                          tgt_text, draft_tgt, draft_eng, back_text, min_name,
+                          min_church, min_location)
+    return gr.update(value=path, visible=True), "✅ Markdown ready — click to download."
 
 
 # ---------------------------------------------------------------------------
@@ -594,8 +1048,11 @@ with gr.Blocks(title="Every Tongue") as demo:
     )
 
     with gr.Row():
-        language = gr.Dropdown(list(LANGUAGES), value="Akuapem Twi",
-                               label="Target language")
+        language = gr.Dropdown(list(TARGET_TRANSLATIONS), value=DEFAULT_TARGET,
+                               label="Target translation")
+        english = gr.Dropdown(list(ENGLISH_VERSIONS), value=DEFAULT_ENGLISH,
+                              label="English source translation")
+    with gr.Row():
         material = gr.Dropdown(MATERIAL_TYPES, value="Devotional",
                                label="Material type")
         audience = gr.Dropdown(AUDIENCES, value="General Congregation",
@@ -628,11 +1085,16 @@ with gr.Blocks(title="Every Tongue") as demo:
         draft_tgt_box = gr.Textbox(label="Draft — target language", lines=14)
         draft_eng_box = gr.Textbox(label="Draft — English", lines=14)
 
-    with gr.Row():
-        back_btn = gr.Button("\U0001f504 Back-translate draft to English")
-        download_btn = gr.DownloadButton("⬇️ Download as Markdown")
+    back_btn = gr.Button("\U0001f504 Back-translate draft to English")
     back_box = gr.Textbox(label="Back-translation (verify the meaning survived)",
                           lines=8)
+
+    gr.Markdown("### Export")
+    with gr.Row():
+        pdf_btn = gr.Button("\U0001f4c4 Export as PDF", variant="primary")
+        md_btn = gr.Button("\U0001f4dd Export as Markdown")
+    pdf_file = gr.File(label="PDF study guide", visible=False, interactive=False)
+    md_file = gr.File(label="Markdown", visible=False, interactive=False)
 
     gr.Markdown(
         "---\nScripture text served by [ScriptureFlow]"
@@ -641,18 +1103,20 @@ with gr.Blocks(title="Every Tongue") as demo:
         "have a native speaker review before use."
     )
 
-    fetch_btn.click(on_fetch, [language, reference], [eng_box, tgt_box, status])
+    fetch_btn.click(on_fetch, [language, english, reference],
+                    [eng_box, tgt_box, status])
     draft_btn.click(on_draft,
-                    [language, material, audience, reference, eng_box, tgt_box,
+                    [language, english, material, audience, reference,
+                     eng_box, tgt_box,
                      min_name, min_church, min_location, min_audience],
                     [draft_tgt_box, draft_eng_box, status])
     back_btn.click(on_back_translate, [language, draft_tgt_box],
                    [back_box, status])
-    download_btn.click(make_download,
-                       [language, material, audience, reference, eng_box,
-                        tgt_box, draft_tgt_box, draft_eng_box, back_box,
-                        min_name, min_church, min_location],
-                       download_btn)
+    export_inputs = [language, english, material, audience, reference,
+                     eng_box, tgt_box, draft_tgt_box, draft_eng_box, back_box,
+                     min_name, min_church, min_location]
+    pdf_btn.click(on_export_pdf, export_inputs, [pdf_file, status])
+    md_btn.click(on_export_md, export_inputs, [md_file, status])
 
 if __name__ == "__main__":
     demo.launch(theme=gr.themes.Soft())
