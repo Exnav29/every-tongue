@@ -18,6 +18,21 @@ from datetime import datetime, timezone
 import gradio as gr
 import requests
 
+# Hugging Face ZeroGPU (the free tier for Gradio Spaces) requires at least one
+# @spaces.GPU function to be present at startup, or the Space is killed with
+# "No @spaces.GPU function detected". Every Tongue runs its actual inference on
+# EXTERNAL endpoints (Fireworks / self-hosted AMD Gemma), not on the Space, so
+# this is a minimal never-called stub purely to satisfy that check. Guarded so
+# local runs (without the `spaces` package) are unaffected.
+try:
+    import spaces
+
+    @spaces.GPU
+    def _zerogpu_stub():
+        return "ok"
+except Exception:
+    pass
+
 SCRIPTUREFLOW_BASE = "https://scriptureflow-api-preview.pages.dev"
 TIMEOUT = 20
 
@@ -1122,6 +1137,12 @@ with gr.Blocks(title="Every Tongue") as demo:
         "**AI-drafted Scripture study materials in low-resource languages** "
         "— grounded in expert human translations via ScriptureFlow, "
         "drafted by Gemma, checked by you."
+    )
+    gr.Markdown(
+        "> ⚡ **Gemma on AMD** — Every Tongue runs the open **Gemma** model on "
+        "**AMD GPU hardware** (AMD Radeon · ROCm · vLLM). "
+        "[See the AMD benchmark & samples ↗]"
+        "(https://github.com/Exnav29/every-tongue/tree/main/evidence/amd-gpu)"
     )
 
     with gr.Row():
