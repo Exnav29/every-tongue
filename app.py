@@ -60,12 +60,14 @@ def mi300x_url() -> str:
 # dropdown with explicit translation names beats cascading menus).
 # label -> (ScriptureFlow version key, language name for prompts)
 TARGET_TRANSLATIONS = {
+    "Swahili — Kiswahili Neno 2015": ("swh-onen", "Swahili"),
     "Akuapem Twi — Biblica Open 2020": ("tw-wakna", "Akuapem Twi"),
     "Asante Twi — Biblica Open 2020": ("tw-wasna", "Asante Twi"),
     "Ewe — eweOAL 2020": ("ee-oal", "Ewe"),
-    "Swahili — Kiswahili Neno 2015": ("swh-onen", "Swahili"),
 }
-DEFAULT_TARGET = "Akuapem Twi — Biblica Open 2020"
+# Swahili is the demo hero (Gemma is fluent in it); Akuapem Twi stays as the
+# showcased low-resource "hard case". Decided Wed Jul 8 on real Gemma output.
+DEFAULT_TARGET = "Swahili — Kiswahili Neno 2015"
 
 MATERIAL_TYPES = ["Study guide", "Devotional", "Discussion questions", "Quick Read"]
 DEFAULT_MATERIAL = "Study guide"

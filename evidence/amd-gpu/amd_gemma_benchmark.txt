@@ -1,0 +1,7 @@
+Every Tongue — AMD GPU inference benchmark
+Model: google/gemma-3-12b-it (Gemma 3, 12B, bfloat16)
+Hardware: AMD Radeon GPU, gfx1100 (RDNA3), 51.5 GB VRAM
+Stack: ROCm 7.2, vLLM 0.16.1, PyTorch 2.9.1, Triton attention backend
+Weights resident: 25.41 GiB | Total VRAM in use: 49.2 GB / 51.5 GB
+Model load time: 262 s
+Generation throughput: 34.8 tokens/sec (770 tokens / 22.1s, 4 prompts batched)
