@@ -67,7 +67,8 @@ TARGET_TRANSLATIONS = {
 }
 DEFAULT_TARGET = "Akuapem Twi — Biblica Open 2020"
 
-MATERIAL_TYPES = ["Devotional", "Discussion questions", "Summary"]
+MATERIAL_TYPES = ["Study guide", "Devotional", "Discussion questions", "Quick Read"]
+DEFAULT_MATERIAL = "Study guide"
 
 AUDIENCES = ["General Congregation", "Children", "Teens", "Young Adults",
              "Adults", "Seniors"]
@@ -297,27 +298,14 @@ def fetch_passage(version: str, book_slug: str, chapter: int, verse: int,
 # is configured (MI300X endpoint or Fireworks key via environment variables).
 # ---------------------------------------------------------------------------
 
-DRAFT_PROMPT = """You are an experienced Bible teacher helping a ministry worker
-create a complete Scripture STUDY GUIDE.
-
-Below is a Bible passage in two parallel translations: English, and {language}
-(an expert human translation). Produce the study guide in TWO versions: first
-in {language}, then the same guide in English. Both versions must carry the
-same meaning, depth, and structure.
-
-Audience: {audience}. Shape vocabulary, examples, depth, and tone for this
-audience. Lean the guide toward a "{material}" emphasis where it reads
-naturally, but always include every section below.
-{ministry_context}
-Write each version with EXACTLY these parts, in this order. Use a Markdown
-"# " line for the title and a Markdown "## " heading for every section. In the
-{language} version, translate the section headings into {language}; in the
-English version, keep them in English.
-
-# (Title — a short line capturing the passage's main message)
+# Each material type sets its own SECTION STRUCTURE. Audience is orthogonal:
+# it sets tone/reading level, not which sections appear. Every structure uses
+# Markdown "# "/"## " headings so the PDF/Markdown renderers stay generic; the
+# review section is added to the target version only (see shared rules below).
+MATERIAL_STRUCTURES = {
+    "Study guide": """# (Title — a short line capturing the passage's main message)
 ## Passage
-   Quote the relevant verse(s) — in {language} for the {language} version, in
-   English for the English version. Quote one or two verses at a time.
+   Quote the relevant verse(s), one or two at a time.
 ## Background
    The historical, cultural, and authorial background of the passage.
 ## Immediate Context
@@ -331,7 +319,64 @@ English version, keep them in English.
 ## Reflection Questions
    A NUMBERED list of 4-6 questions for personal or group study.
 ## Closing Prayer
-   A short prayer flowing from the passage.
+   A short prayer flowing from the passage.""",
+
+    "Devotional": """# (Title — a warm, inviting line)
+## Passage
+   Quote just one or two key verses.
+## Reflection
+   2-3 short, warm paragraphs connecting the verse to everyday life. Personal
+   and encouraging, not academic.
+## One Thought to Carry
+   A single sentence the reader can hold onto today.
+## Closing Prayer
+   A short, heartfelt prayer.""",
+
+    "Discussion questions": """# (Title — a short line naming the theme)
+## Passage
+   Quote the relevant verse(s).
+## Context in Brief
+   2-3 sentences of grounding so a group understands the setting.
+## Observe
+   A NUMBERED list of 2-3 questions about what the passage SAYS.
+## Interpret
+   A NUMBERED list of 2-3 questions about what it MEANS.
+## Apply
+   A NUMBERED list of 2-3 questions about how to LIVE it out.
+## Closing Prayer
+   A one- or two-sentence prayer prompt to close the discussion.""",
+
+    "Quick Read": """# (Title — a short, clear line)
+## Passage
+   Quote the key verse(s).
+## Summary
+   3-5 plain, simple sentences restating the passage's main point — easy to
+   read aloud for oral learners.
+## Key Points
+   A short bulleted list of the main takeaways.
+## One-Line Takeaway
+   A single memorable sentence.""",
+}
+
+DRAFT_PROMPT = """You are an experienced Bible teacher helping a ministry worker
+create Scripture study material. The material type is: {material}.
+
+Below is a Bible passage in two parallel translations: English, and {language}
+(an expert human translation). Produce the material in TWO versions: first in
+{language}, then the same material in English. Both versions must carry the
+same meaning and structure.
+
+The MATERIAL TYPE sets the structure (the sections below); the AUDIENCE sets
+the tone and reading level. They are independent — e.g. a Devotional for
+Children or a Study guide for Seniors are both valid. Audience: {audience} —
+shape vocabulary, examples, depth, and reading level for them.
+{ministry_context}
+Write each version with EXACTLY these parts, in this order. Use a Markdown
+"# " line for the title and a Markdown "## " heading for every section. In the
+{language} version, translate the section headings into {language}; in the
+English version, keep them in English.
+
+{structure}
 
 Rules:
 - Match the vocabulary, spelling, and register of the {language} translation.
@@ -340,18 +385,18 @@ Rules:
   in the other language's version.
 - Write the English version entirely in English and the {language} version
   entirely in {language} (proper names excepted). Do not drop untranslated
-  English words like "goal setting" into the {language} version.
+  English words into the {language} version.
 - Do NOT translate or alter the Scripture text itself.
-- After the Closing Prayer of the {language} version ONLY, add one final
+- After the final section of the {language} version ONLY, add one more
   "## NEEDS NATIVE-SPEAKER REVIEW" section listing any {language} words or
   phrases you are less confident about, one per line.
 - Format your whole answer EXACTLY like this, keeping the marker lines:
 
 === {language} VERSION ===
-(the full study guide in {language})
+(the full material in {language})
 
 === ENGLISH VERSION ===
-(the full study guide in English)
+(the same material in English)
 
 Passage reference: {reference}
 
@@ -572,31 +617,28 @@ MOCK_BANNER = (
 
 def _mock_guide(reference: str, material: str, audience: str, label: str,
                 passage: str) -> str:
-    """One study-guide version in the same section structure the real prompt
-    requires — so the splitter and the PDF renderer are exercised by mocks."""
-    return (
-        f"# {material} on {reference} ({label} · {audience})\n\n"
-        + "## Passage\n"
-        + f"> {passage}\n\n"
-        + "## Background\n"
-        + f"[{label} background: the author, audience, and historical setting "
-        "of the passage would appear here.]\n\n"
-        + "## Immediate Context\n"
-        + f"[{label} note on what comes just before and after the passage.]\n\n"
-        + "## Explanation\n"
-        + f"[{label} phrase-by-phrase explanation of the passage's meaning.]\n\n"
-        + "## Key Spiritual Themes\n"
-        + "- [theme one]\n- [theme two]\n- [theme three]\n\n"
-        + "## Modern-Day Application\n"
-        + f"[{label} application for {audience.lower()} today.]\n\n"
-        + "## Reflection Questions\n"
-        + "1. [question about what the passage says]\n"
-        + "2. [question about what it means]\n"
-        + "3. [question about how to live it this week]\n"
-        + "4. [question for group discussion]\n\n"
-        + "## Closing Prayer\n"
-        + "[a short prayer flowing from the passage.]\n"
-    )
+    """Build a mock version from the selected material type's own structure —
+    so mock output matches the real per-type sections and exercises the
+    splitter and PDF/Markdown renderers for every type."""
+    spec = MATERIAL_STRUCTURES.get(material, MATERIAL_STRUCTURES["Study guide"])
+    out = [f"# {material} on {reference} ({label} · {audience})", ""]
+    for ln in spec.splitlines():
+        s = ln.strip()
+        if not s.startswith("## "):
+            continue
+        heading = s[3:].strip()
+        low = heading.lower()
+        out.append(f"## {heading}")
+        if low == "passage":
+            out.append(f"> {passage}")
+        elif any(w in low for w in ("question", "observe", "interpret", "apply")):
+            out += [f"1. [{label} {low} question]", f"2. [{label} {low} question]"]
+        elif "key" in low or "theme" in low or "point" in low:
+            out += ["- [point one]", "- [point two]"]
+        else:
+            out.append(f"[{label} {low} for {audience.lower()} would appear here.]")
+        out.append("")
+    return "\n".join(out)
 
 
 def mock_draft(material: str, language: str, reference: str,
@@ -680,8 +722,10 @@ def on_draft(target_label: str, english_label: str, material: str,
         return "", "", "⚠️ No passage text yet — fetch or paste one first."
     eng_text = eng_text or ""
     reference = (reference or "").strip() or "the passage"
+    structure = MATERIAL_STRUCTURES.get(material, MATERIAL_STRUCTURES["Study guide"])
     prompt = DRAFT_PROMPT.format(
-        language=language, material=material.lower(), audience=audience,
+        language=language, material=material, audience=audience,
+        structure=structure,
         ministry_context=ministry_context(min_name, min_church,
                                           min_location, min_audience),
         reference=reference,
@@ -929,29 +973,27 @@ class _NumberedCanvas:
         return C
 
 
-def build_pdf(target_label, material, audience, reference, tgt_text,
-              draft_tgt, min_name, min_church, min_location):
-    """Render the target-language study guide as a polished PDF handout,
-    matching the ScriptureFlow study-guide template."""
+def _render_guide_pdf(path, doc_language, translation_name, material, audience,
+                      reference, draft_text, min_name, min_church, min_location):
+    """Render one study-guide version as a polished PDF handout matching the
+    ScriptureFlow template. Language-agnostic — used for both the target
+    language and the English version."""
     _ensure_fonts()
     from reportlab.platypus import SimpleDocTemplate, Spacer, Paragraph, Table, TableStyle
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.lib import colors
 
-    _, language = TARGET_TRANSLATIONS.get(target_label, (None, target_label))
-    translation_name = target_label.split("—")[-1].strip() if "—" in target_label else target_label
-    draft_tgt, min_name, min_church, min_location = _clean_all(
-        draft_tgt, min_name, min_church, min_location)
+    draft_text, min_name, min_church, min_location = _clean_all(
+        draft_text, min_name, min_church, min_location)
     reference = (reference or "").strip() or "passage"
     styles = _pdf_styles()
-    path = _safe_name(reference, "pdf")
 
     # The first '# Title' line in the draft becomes the document title; strip
     # it so it isn't rendered twice. Scan lines (not just position 0) so a
     # leading mock banner or blank line doesn't hide it.
     doc_title = f"{material} — {reference}"
-    lines = draft_tgt.splitlines()
+    lines = draft_text.splitlines()
     for k, ln in enumerate(lines):
         s = ln.lstrip()
         if s.startswith("# ") and not s.startswith("## "):
@@ -961,10 +1003,6 @@ def build_pdf(target_label, material, audience, reference, tgt_text,
     body_text = "\n".join(lines)
 
     footer_left = min_church or "Every Tongue"
-
-    def header(canvas, doc):
-        pass  # header is flowable content (page 1 only), footer via canvas
-
     doc = SimpleDocTemplate(path, pagesize=A4, topMargin=18 * mm,
                             bottomMargin=20 * mm, leftMargin=18 * mm,
                             rightMargin=18 * mm, title=doc_title)
@@ -980,7 +1018,7 @@ def build_pdf(target_label, material, audience, reference, tgt_text,
     ]
     grid = Table(
         [[meta_cell("Passage", reference), meta_cell("Translation", translation_name)],
-         [meta_cell("Language", language), meta_cell("Prepared for", min_name)]],
+         [meta_cell("Language", doc_language), meta_cell("Prepared for", min_name)]],
         colWidths=[87 * mm, 87 * mm])
     grid.setStyle(TableStyle([
         ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.HexColor(BRAND_RULE)),
@@ -993,6 +1031,26 @@ def build_pdf(target_label, material, audience, reference, tgt_text,
 
     doc.build(story, canvasmaker=_NumberedCanvas.make(footer_left))
     return path
+
+
+def build_pdf(target_label, material, audience, reference, tgt_text,
+              draft_tgt, min_name, min_church, min_location):
+    """Target-language study-guide PDF."""
+    _, language = TARGET_TRANSLATIONS.get(target_label, (None, target_label))
+    translation_name = (target_label.split("—")[-1].strip()
+                        if "—" in target_label else target_label)
+    return _render_guide_pdf(
+        _safe_name((reference or "passage"), "pdf"), language, translation_name,
+        material, audience, reference, draft_tgt, min_name, min_church, min_location)
+
+
+def build_pdf_english(english_label, material, audience, reference, draft_eng,
+                      min_name, min_church, min_location):
+    """English-version study-guide PDF (own file so both can be downloaded)."""
+    return _render_guide_pdf(
+        _safe_name((reference or "passage") + "-english", "pdf"), "English",
+        english_label, material, audience, reference, draft_eng,
+        min_name, min_church, min_location)
 
 
 def on_back_translate(target_label: str, draft: str):
@@ -1020,7 +1078,24 @@ def on_export_pdf(target_label, english_label, material, audience, reference,
                          draft_tgt, min_name, min_church, min_location)
     except Exception as e:  # never crash the UI on an export problem
         return gr.update(visible=False), f"⚠️ PDF export failed: {e}"
-    return gr.update(value=path, visible=True), "✅ PDF ready — click to download."
+    _, language = TARGET_TRANSLATIONS.get(target_label, (None, target_label))
+    return (gr.update(value=path, visible=True),
+            f"✅ {language} PDF ready — click to download.")
+
+
+def on_export_pdf_english(target_label, english_label, material, audience,
+                          reference, eng_text, tgt_text, draft_tgt, draft_eng,
+                          back_text, min_name, min_church, min_location):
+    if not (draft_eng or "").strip():
+        return gr.update(visible=False), (
+            "⚠️ No English draft yet — regenerate; the model may have skipped "
+            "the English version.")
+    try:
+        path = build_pdf_english(english_label, material, audience, reference,
+                                 draft_eng, min_name, min_church, min_location)
+    except Exception as e:
+        return gr.update(visible=False), f"⚠️ English PDF export failed: {e}"
+    return gr.update(value=path, visible=True), "✅ English PDF ready — click to download."
 
 
 def on_export_md(target_label, english_label, material, audience, reference,
@@ -1053,7 +1128,7 @@ with gr.Blocks(title="Every Tongue") as demo:
         english = gr.Dropdown(list(ENGLISH_VERSIONS), value=DEFAULT_ENGLISH,
                               label="English source translation")
     with gr.Row():
-        material = gr.Dropdown(MATERIAL_TYPES, value="Devotional",
+        material = gr.Dropdown(MATERIAL_TYPES, value=DEFAULT_MATERIAL,
                                label="Material type")
         audience = gr.Dropdown(AUDIENCES, value="General Congregation",
                                label="Audience")
@@ -1091,10 +1166,12 @@ with gr.Blocks(title="Every Tongue") as demo:
 
     gr.Markdown("### Export")
     with gr.Row():
-        pdf_btn = gr.Button("\U0001f4c4 Export as PDF", variant="primary")
+        pdf_btn = gr.Button("\U0001f4c4 Export target-language PDF", variant="primary")
+        pdf_en_btn = gr.Button("\U0001f4c4 Export English PDF")
         md_btn = gr.Button("\U0001f4dd Export as Markdown")
-    pdf_file = gr.File(label="PDF study guide", visible=False, interactive=False)
-    md_file = gr.File(label="Markdown", visible=False, interactive=False)
+    pdf_file = gr.File(label="Target-language PDF", visible=False, interactive=False)
+    pdf_en_file = gr.File(label="English PDF", visible=False, interactive=False)
+    md_file = gr.File(label="Markdown (both versions)", visible=False, interactive=False)
 
     gr.Markdown(
         "---\nScripture text served by [ScriptureFlow]"
@@ -1116,6 +1193,7 @@ with gr.Blocks(title="Every Tongue") as demo:
                      eng_box, tgt_box, draft_tgt_box, draft_eng_box, back_box,
                      min_name, min_church, min_location]
     pdf_btn.click(on_export_pdf, export_inputs, [pdf_file, status])
+    pdf_en_btn.click(on_export_pdf_english, export_inputs, [pdf_en_file, status])
     md_btn.click(on_export_md, export_inputs, [md_file, status])
 
 if __name__ == "__main__":
