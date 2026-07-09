@@ -57,5 +57,12 @@ kept in the app as the showcased "hard case."
 - `twi_samples.txt` — Akuapem Twi devotionals for the four passages.
 - `swahili_samples.txt` — Swahili devotionals for the four passages.
 - `swahili_study_guide.txt` — a full 9-section Swahili study guide (Jeremiah 29).
-- `rocm-smi-gemma-loaded.png` — `rocm-smi` screenshot showing Gemma resident on
-  the AMD GPU (add the saved screenshot here).
+
+### Screenshots (real captures from the run)
+
+- `rocm-smi-idle.png` — `rocm-smi` before load (GPU at 0% VRAM).
+- `rocm-smi-gemma-loaded.png` — `rocm-smi` with **Gemma 3 12B resident on the
+  AMD Radeon GPU** (VRAM ~84%). The before/after pair is the proof the model
+  actually occupied the AMD GPU.
+- `gemma-load-vllm.png` — the vLLM load step (ROCm, Triton attention backend).
+- `benchmark.png` — the throughput / VRAM benchmark output.
