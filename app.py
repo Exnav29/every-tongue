@@ -10,6 +10,7 @@ endpoint is up -> Fireworks AI -> mock responses (no key configured yet).
 Built for the AMD Developer Hackathon: ACT II, July 2026.
 """
 
+import json
 import os
 import re
 import tempfile
@@ -71,18 +72,64 @@ def fireworks_key() -> str:
 def mi300x_url() -> str:
     return os.environ.get("MI300X_BASE_URL", "").rstrip("/")
 
-# Target translations, flat list (only Twi has two versions; a single
-# dropdown with explicit translation names beats cascading menus).
-# label -> (ScriptureFlow version key, language name for prompts)
-TARGET_TRANSLATIONS = {
+# Target translations.  label -> (ScriptureFlow version key, language name).
+#
+# VERIFIED = hand-mapped, Latin-script, font-covered, end-to-end tested.
+# Swahili is the demo hero (Gemma is fluent in it); Akuapem Twi stays as the
+# showcased low-resource "hard case". The rest of ScriptureFlow's ~199
+# translations are added dynamically as EXPERIMENTAL so a visitor sees the
+# real breadth — with graceful degradation (reference lookup may be
+# unavailable -> paste-in; PDF steers non-Latin/RTL scripts to Markdown).
+VERIFIED_TARGETS = {
     "Swahili — Kiswahili Neno 2015": ("swh-onen", "Swahili"),
     "Akuapem Twi — Biblica Open 2020": ("tw-wakna", "Akuapem Twi"),
     "Asante Twi — Biblica Open 2020": ("tw-wasna", "Asante Twi"),
     "Ewe — eweOAL 2020": ("ee-oal", "Ewe"),
 }
-# Swahili is the demo hero (Gemma is fluent in it); Akuapem Twi stays as the
-# showcased low-resource "hard case". Decided Wed Jul 8 on real Gemma output.
+VERIFIED_VERSIONS = {v for v, _ in VERIFIED_TARGETS.values()}
 DEFAULT_TARGET = "Swahili — Kiswahili Neno 2015"
+
+
+def _load_language_names() -> dict:
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "language_names.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def build_target_translations() -> dict:
+    """Verified languages first, then the full ScriptureFlow corpus as
+    experimental. Falls back to verified-only if the catalog can't be
+    fetched, so the app never breaks on a startup network hiccup."""
+    mapping = dict(VERIFIED_TARGETS)
+    names = _load_language_names()
+    try:
+        catalog = requests.get(f"{SCRIPTUREFLOW_BASE}/translations.json",
+                               timeout=15).json()
+    except Exception:
+        return mapping  # verified-only
+    experimental = []
+    for t in catalog:
+        if t.get("status") != "ready" or t.get("version") in VERIFIED_VERSIONS:
+            continue
+        ver = t["version"]
+        name = names.get(t.get("language_code", ""), "") or t.get("language_code", "?").upper()
+        tname = (t.get("translation_name") or "").strip()
+        label = f"{name} — {tname}" if tname else name
+        base, i = label, 2
+        while label in mapping or label in {e[0] for e in experimental}:
+            label, i = f"{base} ({i})", i + 1
+        experimental.append((label, ver, name))
+    experimental.sort(key=lambda e: e[0].lower())
+    for label, ver, name in experimental:
+        mapping[label] = (ver, name)
+    return mapping
+
+
+TARGET_TRANSLATIONS = build_target_translations()
 
 MATERIAL_TYPES = ["Study guide", "Devotional", "Discussion questions", "Quick Read"]
 DEFAULT_MATERIAL = "Study guide"
@@ -712,9 +759,14 @@ def on_fetch(target_label: str, english_label: str, reference: str):
             "passage into the boxes by hand and still generate a draft."
         )
     if book not in tgt_map:
+        verified = version in VERIFIED_VERSIONS
+        note = ("" if verified else
+                " (reference lookup isn't wired up for this experimental "
+                "translation yet)")
         return eng_text, "", (
-            f"⚠️ That book isn't available in the {language} "
-            "translation. Paste the passage by hand if you have it."
+            f"ℹ️ Couldn't auto-fetch this book in {language}{note} — the "
+            "English side is loaded; **paste the "
+            f"{language} passage** into the box on the right to continue."
         )
     try:
         tgt_text, tgt_name = fetch_passage(version, tgt_map[book],
@@ -800,6 +852,37 @@ def _ensure_fonts():
     pdfmetrics.registerFontFamily("ET", normal="ET", bold="ET-Bold",
                                   italic="ET", boldItalic="ET-Bold")
     _fonts_ready = True
+
+
+_dejavu_cmap = None
+
+
+def _font_cmap():
+    global _dejavu_cmap
+    if _dejavu_cmap is None:
+        from reportlab.pdfbase.ttfonts import TTFont as RLTTFont
+        f = RLTTFont("cov", os.path.join(FONTS_DIR, "DejaVuSans.ttf"))
+        _dejavu_cmap = f.face.charToGlyph
+    return _dejavu_cmap
+
+
+def pdf_unsupported_script(text: str) -> bool:
+    """True when the PDF renderer can't do this text justice — so we steer to
+    Markdown instead of producing a broken/tofu PDF. Covers two cases:
+    right-to-left / complex-shaping scripts (Arabic, Hebrew — reportlab does
+    no bidi or shaping), and scripts the bundled DejaVu font lacks glyphs for
+    (Devanagari, Bengali, Tamil, Telugu, Thai, CJK …). Latin, Cyrillic, Greek,
+    and Twi/Ewe pass through fine."""
+    cmap = _font_cmap()
+    for c in text:
+        if 0x0590 <= ord(c) <= 0x08FF:  # Hebrew/Arabic/Syriac/Thaana — RTL
+            return True
+    exotic = [c for c in text if c.isalpha() and ord(c) >= 0x0500]
+    if exotic:
+        missing = sum(1 for c in exotic if ord(c) not in cmap)
+        if missing > len(exotic) * 0.2:
+            return True
+    return False
 
 
 def _safe_name(reference: str, ext: str) -> str:
@@ -1090,12 +1173,18 @@ def on_export_pdf(target_label, english_label, material, audience, reference,
                   min_name, min_church, min_location):
     if not (draft_tgt or "").strip():
         return gr.update(visible=False), "⚠️ Generate a draft before exporting."
+    _, language = TARGET_TRANSLATIONS.get(target_label, (None, target_label))
+    if pdf_unsupported_script(draft_tgt):
+        return gr.update(visible=False), (
+            f"ℹ️ PDF export doesn't support the {language} script yet "
+            "(right-to-left or complex scripts don't render correctly in the "
+            "PDF). Use **Export as Markdown** instead — it preserves the text "
+            "perfectly and opens anywhere.")
     try:
         path = build_pdf(target_label, material, audience, reference, tgt_text,
                          draft_tgt, min_name, min_church, min_location)
     except Exception as e:  # never crash the UI on an export problem
         return gr.update(visible=False), f"⚠️ PDF export failed: {e}"
-    _, language = TARGET_TRANSLATIONS.get(target_label, (None, target_label))
     return (gr.update(value=path, visible=True),
             f"✅ {language} PDF ready — click to download.")
 
@@ -1150,6 +1239,14 @@ with gr.Blocks(title="Every Tongue") as demo:
                                label="Target translation")
         english = gr.Dropdown(list(ENGLISH_VERSIONS), value=DEFAULT_ENGLISH,
                               label="English source translation")
+    gr.Markdown(
+        f"*The first 4 target translations are **verified** end-to-end. The "
+        f"other {max(len(TARGET_TRANSLATIONS) - len(VERIFIED_TARGETS), 0)} are "
+        "**ScriptureFlow's full corpus (experimental)** — generation quality "
+        "varies (the low-resource languages are exactly the hard case this "
+        "tool exists for), reference lookup may fall back to paste-in, and "
+        "PDF export steers non-Latin/right-to-left scripts to Markdown.*"
+    )
     with gr.Row():
         material = gr.Dropdown(MATERIAL_TYPES, value=DEFAULT_MATERIAL,
                                label="Material type")
