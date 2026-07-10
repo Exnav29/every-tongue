@@ -1230,106 +1230,239 @@ def on_export_md(target_label, english_label, material, audience, reference,
 # Interface
 # ---------------------------------------------------------------------------
 
-with gr.Blocks(title="Every Tongue") as demo:
-    gr.Markdown(
-        "# \U0001f30d Every Tongue\n"
-        "**AI-drafted Scripture study materials in low-resource languages** "
-        "— grounded in expert human translations via ScriptureFlow, "
-        "drafted by Gemma, checked by you."
-    )
-    gr.Markdown(
-        "### Grounded study-material drafting — **not Bible translation.** "
-        "Powered by **Gemma on AMD GPU** "
-        "([see evidence](https://github.com/Exnav29/every-tongue/tree/main/evidence/amd-gpu))."
-    )
-    gr.Markdown(
-        "> ⚡ **Gemma on AMD** — Every Tongue runs the open **Gemma** model on "
-        "**AMD GPU hardware** (AMD Radeon · ROCm · vLLM). "
-        "[See the AMD benchmark & samples ↗]"
-        "(https://github.com/Exnav29/every-tongue/tree/main/evidence/amd-gpu)"
-    )
-    gr.Markdown(
-        "**Backend:** the live demo uses a **Fireworks (AMD-backed) stand-in "
-        "model** — labeled honestly on each generation below — while the real "
-        "**Gemma-on-AMD** run is documented in "
-        "[repo evidence](https://github.com/Exnav29/every-tongue/tree/main/evidence/amd-gpu). "
-        "**Scripture source:** ScriptureFlow. Every draft is a starting point — "
-        "**native-speaker review required.** *(With no backend configured, the "
-        "app clearly labels its output as mock preview.)*"
-    )
+EVIDENCE_URL = "https://github.com/Exnav29/every-tongue/tree/main/evidence/amd-gpu"
 
-    with gr.Row():
-        language = gr.Dropdown(list(TARGET_TRANSLATIONS), value=DEFAULT_TARGET,
-                               label="Target translation")
-        english = gr.Dropdown(list(ENGLISH_VERSIONS), value=DEFAULT_ENGLISH,
-                              label="English source translation")
-    gr.Markdown(
-        f"*The first 4 target translations are **verified** end-to-end. The "
-        f"other {max(len(TARGET_TRANSLATIONS) - len(VERIFIED_TARGETS), 0)} are "
-        "**ScriptureFlow's full corpus (experimental)** — generation quality "
-        "varies (the low-resource languages are exactly the hard case this "
-        "tool exists for), reference lookup may fall back to paste-in, and "
-        "PDF export steers non-Latin/right-to-left scripts to Markdown.*"
-    )
-    with gr.Row():
-        material = gr.Dropdown(MATERIAL_TYPES, value=DEFAULT_MATERIAL,
-                               label="Material type")
-        audience = gr.Dropdown(AUDIENCES, value="General Congregation",
-                               label="Audience")
-        reference = gr.Textbox(label="Passage reference",
-                               placeholder="e.g. John 3:16 or James 1:2-4")
-    gr.Markdown(
-        "**Judge demo path:**  (1) **Swahili** · reference **John 3:16-17** → "
-        "the strong-case output.  (2) **Akuapem Twi** · same reference → the "
-        "low-resource stress test that shows why the grounding + "
-        "back-translation + native-speaker-review guardrails matter. Pick any "
-        "Material type / Audience."
-    )
+# Custom theme — teal/gold, NOT default Gradio purple. Set on gr.Blocks so it
+# applies BOTH locally and on Hugging Face Spaces (the Space imports `demo` and
+# never runs __main__, so a theme passed to .launch() would be ignored there).
+# Font stack falls back to system-ui/Segoe UI, which render Twi/Ewe glyphs
+# (ɔ U+0254, ɛ U+025B) even if the web font's loaded subset lacks them.
+THEME = gr.themes.Soft(
+    primary_hue=gr.themes.colors.teal,
+    secondary_hue=gr.themes.colors.teal,
+    neutral_hue=gr.themes.colors.slate,
+    font=[gr.themes.GoogleFont("Inter"), "system-ui", "Segoe UI", "sans-serif"],
+    radius_size=gr.themes.sizes.radius_lg,
+)
 
-    with gr.Accordion("About your ministry (optional — shapes the drafts)",
+CUSTOM_CSS = """
+:root {
+  --et-teal:#0f766e; --et-teal-deep:#022f2e; --et-gold:#c99a3b;
+  --et-canvas:#f7f5f0; --et-ink:#1f2933; --et-muted:#5b6670;
+  --et-card:#ffffff; --et-line:#e7e2d8;
+}
+gradio-app, .gradio-container { background: var(--et-canvas) !important; }
+.gradio-container {
+  max-width: 1060px !important; margin: 0 auto !important;
+  padding: 0 16px 52px !important;
+}
+/* ---------- header ---------- */
+.et-header {
+  background: linear-gradient(135deg,#022f2e 0%,#0f766e 100%);
+  color:#f4efe6; border-radius:22px; padding:32px 34px; margin:20px 0 8px;
+  box-shadow:0 20px 44px -24px rgba(2,47,46,.75);
+}
+.et-wordmark { font-size:34px; font-weight:800; letter-spacing:-.02em;
+  margin:0; display:flex; align-items:center; gap:12px; line-height:1.1;
+  color:#ffffff !important; }
+.et-tag { font-size:15.5px; margin:10px 0 0; color:#d7ede9 !important;
+  font-weight:500; max-width:64ch; line-height:1.5; }
+.et-tag b { color:#ffffff !important; }
+.et-flow { display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+  margin-top:18px; font-size:13px; font-weight:600; }
+.et-flow span { background:rgba(255,255,255,.10); padding:6px 12px;
+  border-radius:999px; }
+.et-flow .arrow { background:none; padding:0 2px; color:#8fd0c6; }
+.et-badges { margin-top:18px; display:flex; flex-wrap:wrap; gap:10px;
+  align-items:center; }
+.et-badge { display:inline-flex; align-items:center; gap:7px;
+  background:rgba(201,154,59,.18); color:#f0d597;
+  border:1px solid rgba(201,154,59,.45); padding:6px 13px; border-radius:999px;
+  font-size:12.5px; font-weight:700; text-decoration:none; }
+.et-badge:hover { background:rgba(201,154,59,.30); }
+.et-badge.plain { background:rgba(255,255,255,.10); color:#d7ede9;
+  border-color:rgba(255,255,255,.22); }
+.et-note { margin-top:16px; padding-top:14px; font-size:12.5px; color:#c6e3dd;
+  line-height:1.55; border-top:1px solid rgba(255,255,255,.14); }
+.et-note b { color:#fff; }
+/* ---------- cards ---------- */
+.et-card {
+  background:var(--et-card) !important; border:1px solid var(--et-line) !important;
+  border-radius:18px !important; padding:22px 22px 20px !important;
+  margin:14px 0 !important; box-shadow:0 14px 32px -26px rgba(2,47,46,.55) !important;
+}
+/* gr.Group renders two nested divs that both take elem_classes; flatten the
+   inner duplicate so we don't get a card-inside-a-card. */
+.et-card .et-card { border:none !important; box-shadow:none !important;
+  padding:0 !important; margin:0 !important; background:transparent !important;
+  border-radius:0 !important; }
+.et-step { font-size:11.5px; font-weight:800; letter-spacing:.10em;
+  text-transform:uppercase; color:var(--et-teal); margin:0 0 3px; }
+.et-h { font-size:20px; font-weight:700; color:var(--et-teal-deep); margin:0 0 4px; }
+.et-sub { font-size:13px; color:var(--et-muted); margin:0 0 4px; }
+/* ---------- status strip ---------- */
+.et-status p { background:#fff; border:1px solid var(--et-line);
+  border-left:4px solid var(--et-teal); padding:11px 15px; border-radius:12px;
+  margin:10px 0; color:var(--et-ink); font-size:14px; }
+/* ---------- buttons ---------- */
+button.primary { background:linear-gradient(135deg,#0f766e,#0b5c55) !important;
+  border:none !important; color:#fff !important; font-weight:700 !important;
+  box-shadow:0 10px 24px -14px rgba(15,118,110,.9) !important; }
+button.primary:hover { filter:brightness(1.07); }
+/* ---------- footer ---------- */
+.et-footer { text-align:center; color:var(--et-muted); font-size:12.5px;
+  line-height:1.6; margin:22px 8px 0; padding-top:18px;
+  border-top:1px solid var(--et-line); }
+.et-footer a { color:var(--et-teal); }
+label span { font-weight:600 !important; }
+"""
+
+HEADER_HTML = f"""
+<div class="et-header">
+  <h1 class="et-wordmark">🌍 Every Tongue</h1>
+  <p class="et-tag">AI-drafted Scripture <b>study materials</b> for low-resource
+  languages — grounded in expert human translations, checked by you. It drafts
+  study material from existing translations; it does <b>not</b> translate Scripture.</p>
+  <div class="et-flow">
+    <span>Scripture passage</span><span class="arrow">→</span>
+    <span>grounded study material</span><span class="arrow">→</span>
+    <span>English back-translation</span><span class="arrow">→</span>
+    <span>reviewer handout</span>
+  </div>
+  <div class="et-badges">
+    <a class="et-badge" href="{EVIDENCE_URL}" target="_blank" rel="noopener">
+      🔬 Built with Gemma on AMD · ROCm · vLLM ↗</a>
+    <span class="et-badge plain">📖 Scripture via ScriptureFlow</span>
+    <span class="et-badge plain">✓ Native-speaker review required</span>
+  </div>
+  <div class="et-note">
+    <b>Live backend:</b> a Fireworks (AMD-backed) stand-in model — <b>not live
+    Gemma-on-AMD</b>. The genuine Gemma-on-AMD run (Radeon gfx1100 · ROCm · vLLM)
+    is documented in the <a href="{EVIDENCE_URL}" target="_blank" rel="noopener"
+    style="color:#f0d597">repo evidence</a>. Every generation below is labeled
+    with its real backend. <i>(With no backend configured, output is clearly
+    labeled a mock preview.)</i>
+  </div>
+</div>
+"""
+
+FOOTER_HTML = (
+    '<div class="et-footer">Scripture text served by '
+    '<a href="https://scriptureflow-api-preview.pages.dev" target="_blank" '
+    'rel="noopener">ScriptureFlow</a>; translation names are shown with each '
+    'fetch.<br>AI drafts are starting points — always have a native speaker '
+    'review before use.</div>'
+)
+
+_exp_count = max(len(TARGET_TRANSLATIONS) - len(VERIFIED_TARGETS), 0)
+
+with gr.Blocks(title="Every Tongue", theme=THEME, css=CUSTOM_CSS) as demo:
+    gr.HTML(HEADER_HTML)
+
+    with gr.Accordion("ℹ️  How this works · backend honesty · AMD evidence",
                       open=False):
+        gr.Markdown(
+            "**What it does.** Every Tongue drafts Scripture *study material* "
+            "(study guides, devotionals, discussion questions, quick reads) "
+            "from **existing human translations** — it does **not** translate "
+            "Scripture, and every draft requires **native-speaker review** "
+            "before use.\n\n"
+            "**How it's grounded.** Passages are fetched from **ScriptureFlow** "
+            "in *both* English and the target language, so drafts match the "
+            "vocabulary and register of the expert translation.\n\n"
+            "**AMD / Gemma.** The genuine **Gemma-on-AMD** run — `google/"
+            "gemma-3-12b-it` on an **AMD Radeon GPU (gfx1100), ROCm, vLLM** — is "
+            f"documented with benchmarks and samples in the [repo evidence]({EVIDENCE_URL}). "
+            "The **live demo here** uses a **Fireworks (AMD-backed) stand-in "
+            "model**, labeled honestly on each generation — it is **not** live "
+            "Gemma-on-AMD."
+        )
+
+    # ---- Step 1: choose the passage -------------------------------------
+    with gr.Group(elem_classes="et-card"):
+        gr.HTML("<p class='et-step'>Step 1</p>"
+                "<p class='et-h'>Choose your passage</p>"
+                "<p class='et-sub'>Pick a language, a source translation, and "
+                "enter a reference — or paste text further down.</p>")
         with gr.Row():
-            min_name = gr.Textbox(label="Your name")
-            min_church = gr.Textbox(label="Church / ministry name")
-            min_location = gr.Textbox(label="Location")
-        min_audience = gr.Textbox(
-            label="Describe your audience",
-            placeholder="e.g. youth group in Kumasi, mixed reading levels, "
-                        "many oral learners", lines=2)
-        gr.Markdown("*Session only — nothing is saved after you close the page.*")
+            language = gr.Dropdown(list(TARGET_TRANSLATIONS), value=DEFAULT_TARGET,
+                                   label="Target translation")
+            english = gr.Dropdown(list(ENGLISH_VERSIONS), value=DEFAULT_ENGLISH,
+                                  label="English source translation")
+        with gr.Accordion("Language tiers — verified vs. experimental",
+                          open=False):
+            gr.Markdown(
+                f"The first 4 target translations are **verified** end-to-end. "
+                f"The other {_exp_count} are **ScriptureFlow's full corpus "
+                "(experimental)** — generation quality varies (the low-resource "
+                "languages are exactly the hard case this tool exists for), "
+                "reference lookup may fall back to paste-in, and PDF export "
+                "steers non-Latin/right-to-left scripts to Markdown."
+            )
+        with gr.Row():
+            material = gr.Dropdown(MATERIAL_TYPES, value=DEFAULT_MATERIAL,
+                                   label="Material type")
+            audience = gr.Dropdown(AUDIENCES, value="General Congregation",
+                                   label="Audience")
+            reference = gr.Textbox(label="Passage reference",
+                                   placeholder="e.g. John 3:16 or James 1:2-4")
+        with gr.Accordion("⭐  Suggested judge demo path", open=False):
+            gr.Markdown(
+                "**(1) Swahili · John 3:16-17** → the strong-case output.  "
+                "**(2) Akuapem Twi · same reference** → the low-resource stress "
+                "test that shows why the grounding + back-translation + "
+                "native-speaker-review guardrails matter. Pick any Material "
+                "type / Audience."
+            )
+        with gr.Accordion("About your ministry (optional — shapes the drafts)",
+                          open=False):
+            with gr.Row():
+                min_name = gr.Textbox(label="Your name")
+                min_church = gr.Textbox(label="Church / ministry name")
+                min_location = gr.Textbox(label="Location")
+            min_audience = gr.Textbox(
+                label="Describe your audience",
+                placeholder="e.g. youth group in Kumasi, mixed reading levels, "
+                            "many oral learners", lines=2)
+            gr.Markdown("*Session only — nothing is saved after you close the page.*")
 
-    fetch_btn = gr.Button("\U0001f4d6 Fetch passage", variant="primary")
-    status = gr.Markdown()
+        fetch_btn = gr.Button("\U0001f4d6  Fetch passage", variant="primary")
+        with gr.Row():
+            eng_box = gr.Textbox(label="English passage (editable — paste by "
+                                       "hand if the fetch fails)", lines=4)
+            tgt_box = gr.Textbox(label="Target-language passage (editable)", lines=4)
 
-    with gr.Row():
-        eng_box = gr.Textbox(label="English passage (editable — paste by "
-                                   "hand if the fetch fails)", lines=4)
-        tgt_box = gr.Textbox(label="Target-language passage (editable)", lines=4)
+    status = gr.Markdown(elem_classes="et-status")
 
-    draft_btn = gr.Button("✍️ Draft study material", variant="primary")
-    with gr.Row():
-        draft_tgt_box = gr.Textbox(label="Target-Language Study Material", lines=14)
-        draft_eng_box = gr.Textbox(label="English Version", lines=14)
+    # ---- Step 2: draft the material -------------------------------------
+    with gr.Group(elem_classes="et-card"):
+        gr.HTML("<p class='et-step'>Step 2</p>"
+                "<p class='et-h'>Draft the study material</p>"
+                "<p class='et-sub'>Generates parallel drafts — target language "
+                "and English — then back-translate to verify the meaning.</p>")
+        draft_btn = gr.Button("✍️  Draft study material", variant="primary")
+        with gr.Row():
+            draft_tgt_box = gr.Textbox(label="Target-Language Study Material", lines=14)
+            draft_eng_box = gr.Textbox(label="English Version", lines=14)
+        back_btn = gr.Button("\U0001f504  Back-translate draft to English")
+        back_box = gr.Textbox(
+            label="English Back-Translation (verify the meaning survived)", lines=8)
 
-    back_btn = gr.Button("\U0001f504 Back-translate draft to English")
-    back_box = gr.Textbox(label="English Back-Translation (verify the meaning survived)",
-                          lines=8)
+    # ---- Step 3: export the handout -------------------------------------
+    with gr.Group(elem_classes="et-card"):
+        gr.HTML("<p class='et-step'>Step 3</p>"
+                "<p class='et-h'>Export the reviewer handout</p>"
+                "<p class='et-sub'>Download a formatted PDF or Markdown handout "
+                "for native-speaker review.</p>")
+        with gr.Row():
+            pdf_btn = gr.Button("\U0001f4c4  Export target-language PDF", variant="primary")
+            pdf_en_btn = gr.Button("\U0001f4c4  Export English PDF")
+            md_btn = gr.Button("\U0001f4dd  Export as Markdown")
+        pdf_file = gr.File(label="Target-language PDF", visible=False, interactive=False)
+        pdf_en_file = gr.File(label="English PDF", visible=False, interactive=False)
+        md_file = gr.File(label="Markdown (both versions)", visible=False, interactive=False)
 
-    gr.Markdown("### Export")
-    with gr.Row():
-        pdf_btn = gr.Button("\U0001f4c4 Export target-language PDF", variant="primary")
-        pdf_en_btn = gr.Button("\U0001f4c4 Export English PDF")
-        md_btn = gr.Button("\U0001f4dd Export as Markdown")
-    pdf_file = gr.File(label="Target-language PDF", visible=False, interactive=False)
-    pdf_en_file = gr.File(label="English PDF", visible=False, interactive=False)
-    md_file = gr.File(label="Markdown (both versions)", visible=False, interactive=False)
-
-    gr.Markdown(
-        "---\nScripture text served by [ScriptureFlow]"
-        "(https://scriptureflow-api-preview.pages.dev); translation names are "
-        "shown with each fetch. AI drafts are starting points — always "
-        "have a native speaker review before use."
-    )
+    gr.HTML(FOOTER_HTML)
 
     fetch_btn.click(on_fetch, [language, english, reference],
                     [eng_box, tgt_box, status])
@@ -1348,4 +1481,4 @@ with gr.Blocks(title="Every Tongue") as demo:
     md_btn.click(on_export_md, export_inputs, [md_file, status])
 
 if __name__ == "__main__":
-    demo.launch(theme=gr.themes.Soft())
+    demo.launch()
