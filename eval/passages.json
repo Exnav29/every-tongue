@@ -1,0 +1,23 @@
+{
+  "about": "Test-case definitions for evaluating Every Tongue's generated study material. Only cases with run=\"yes\" have an actual saved output in sample_outputs/. Every other case is \"pending\" and has NOT been run — no scores or outputs are fabricated.",
+  "model_under_test": "google/gemma-3-12b-it",
+  "hardware": "AMD Radeon GPU, gfx1100 (RDNA3), ~48 GB VRAM",
+  "runtime": "ROCm 7.2 + vLLM 0.16.1 (documented in ../evidence/amd-gpu/)",
+  "grounding_source": "ScriptureFlow (English + target-language parallel text)",
+  "cases": [
+    { "id": "ruth-1-1-5-swahili-devotional",        "reference": "Ruth 1:1-5",       "target_language": "Swahili",     "material": "Devotional",  "run": "yes",     "output": "sample_outputs/swahili_devotionals.txt" },
+    { "id": "jeremiah-29-9-13-swahili-devotional",   "reference": "Jeremiah 29:9-13", "target_language": "Swahili",     "material": "Devotional",  "run": "yes",     "output": "sample_outputs/swahili_devotionals.txt" },
+    { "id": "matthew-3-16-swahili-devotional",       "reference": "Matthew 3:16",     "target_language": "Swahili",     "material": "Devotional",  "run": "yes",     "output": "sample_outputs/swahili_devotionals.txt" },
+    { "id": "psalm-29-8-swahili-devotional",         "reference": "Psalm 29:8",       "target_language": "Swahili",     "material": "Devotional",  "run": "yes",     "output": "sample_outputs/swahili_devotionals.txt" },
+    { "id": "ruth-1-1-5-twi-devotional",             "reference": "Ruth 1:1-5",       "target_language": "Akuapem Twi", "material": "Devotional",  "run": "yes",     "output": "sample_outputs/akuapem_twi_devotionals.txt" },
+    { "id": "jeremiah-29-9-13-twi-devotional",       "reference": "Jeremiah 29:9-13", "target_language": "Akuapem Twi", "material": "Devotional",  "run": "yes",     "output": "sample_outputs/akuapem_twi_devotionals.txt" },
+    { "id": "matthew-3-16-twi-devotional",           "reference": "Matthew 3:16",     "target_language": "Akuapem Twi", "material": "Devotional",  "run": "yes",     "output": "sample_outputs/akuapem_twi_devotionals.txt" },
+    { "id": "psalm-29-8-twi-devotional",             "reference": "Psalm 29:8",       "target_language": "Akuapem Twi", "material": "Devotional",  "run": "yes",     "output": "sample_outputs/akuapem_twi_devotionals.txt" },
+    { "id": "jeremiah-29-9-13-swahili-studyguide",   "reference": "Jeremiah 29:9-13", "target_language": "Swahili",     "material": "Study guide", "run": "yes",     "output": "sample_outputs/swahili_study_guide_jeremiah29.txt" },
+
+    { "id": "jeremiah-29-9-13-twi-studyguide",       "reference": "Jeremiah 29:9-13", "target_language": "Akuapem Twi", "material": "Study guide",          "run": "pending", "output": null },
+    { "id": "john-3-16-17-swahili-studyguide",       "reference": "John 3:16-17",     "target_language": "Swahili",     "material": "Study guide",          "run": "pending", "output": null },
+    { "id": "john-3-16-17-swahili-discussion",       "reference": "John 3:16-17",     "target_language": "Swahili",     "material": "Discussion questions", "run": "pending", "output": null },
+    { "id": "psalm-23-1-3-swahili-quickread",        "reference": "Psalm 23:1-3",     "target_language": "Swahili",     "material": "Quick Read",           "run": "pending", "output": null }
+  ]
+}
