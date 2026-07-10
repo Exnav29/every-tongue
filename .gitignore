@@ -16,3 +16,6 @@ Thumbs.db
 
 # Project brief with pitch strategy — local only, not for the public repo
 BRIEF.md
+
+# Private local session pointer (auto-loaded by Claude Code) — not for the repo
+CLAUDE.local.md
